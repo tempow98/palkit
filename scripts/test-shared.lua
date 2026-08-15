@@ -106,5 +106,81 @@ check("objet ecrase par scalaire -> defaut", merged.minimap.size == 200)
 config.deepMerge(defaults, { minimap = { size = 999 } }, nil, nil)
 check("defauts non mutes", defaults.minimap.size == 200, defaults.minimap.size)
 
+-- ---------------------------------------------------------------- query
+-- query.lua parle au moteur, mais ses gardes sont testables hors jeu : c'est justement
+-- leur role d'absorber des objets qui n'ont pas la forme attendue.
+local query = require("query")
+
+-- Faux UObject : une table dont les methodes prennent self, comme cote UE4SS.
+local fakeObj = {
+    value = 42,
+    GetThing = function(self) return self.value end,
+    Add      = function(self, a, b) return a + b end,
+    Boom     = function(self) error("la reflexion moteur a leve") end,
+}
+
+check("call methode simple", query.call(fakeObj, "GetThing") == 42)
+check("call avec arguments", query.call(fakeObj, "Add", 2, 3) == 5)
+check("call methode absente -> nil", query.call(fakeObj, "PasLa") == nil)
+check("call methode qui leve -> nil", query.call(fakeObj, "Boom") == nil)
+check("call sur nil -> nil", query.call(nil, "GetThing") == nil)
+
+check("get propriete", query.get(fakeObj, "value") == 42)
+check("get propriete absente -> nil", query.get(fakeObj, "absente") == nil)
+check("get sur nil -> nil", query.get(nil, "value") == nil)
+
+check("str chaine", query.str("deja une chaine") == "deja une chaine")
+check("str via ToString", query.str({ ToString = function() return "FName" end }) == "FName")
+check("str sur nil", query.str(nil) == nil)
+
+check("nameOf sur nil", query.nameOf(nil) == "<nil>")
+check("nameOf sur objet muet", query.nameOf({}) == "<sans nom>")
+
+-- Un cache vide ne doit jamais rendre un objet mort : reset est idempotent.
+check("reset ne leve pas", pcall(query.reset))
+check("reset idempotent", pcall(query.reset))
+
+-- ---------------------------------------------------------------- palio
+local palio = require("palio")
+
+-- On force le dossier de sortie : sans le jeu, resolveModDir retomberait sur "." et
+-- ecrirait dans le depot.
+local tmpDir = os.getenv("TMPDIR") or "/tmp"
+local realResolve = config.resolveModDir
+config.resolveModDir = function() return tmpDir, "test" end
+
+local writer = palio.new({ modName = "PalKitTest", prefix = "test" })
+check("modDir force", writer.modDir == tmpDir, writer.modDir)
+
+local payload = {
+    meta = { palCount = 2 },
+    pals = { { species = "Lamball", level = 3 }, { species = "Cattiva", level = 5 } },
+    warnings = {},
+}
+local path, err = writer.writeJson("export", payload)
+check("writeJson renvoie un chemin", type(path) == "string", err)
+check("nom horodate", path and path:find("test%-export%-%d+%-%d+%.json") ~= nil, path)
+
+if path then
+    local f = io.open(path, "r")
+    check("fichier cree", f ~= nil)
+    if f then
+        local content = f:read("*a")
+        f:close()
+        local back = json.decode(content)
+        check("relecture JSON", back ~= nil)
+        check("contenu preserve", back and back.pals[2].species == "Cattiva")
+        check("meta preserve", back and back.meta.palCount == 2)
+        os.remove(path)
+    end
+end
+
+-- Une valeur non serialisable ne doit pas lever : elle est signalee, pas propagee.
+local cyclic = {}; cyclic.self = cyclic
+local badPath, badErr = writer.writeJson("cycle", cyclic)
+check("cycle -> pas de fichier", badPath == nil and type(badErr) == "string", badErr)
+
+config.resolveModDir = realResolve
+
 print(("\n%d OK, %d KO"):format(pass, fail))
 os.exit(fail == 0 and 0 or 1)

@@ -3,6 +3,22 @@
 Ce document s'adresse à Lucas, qui est le **runtime** du projet : il installe, lance, teste et
 renvoie les logs. Chaque étape est donc explicite jusqu'à la touche à presser.
 
+> **État au 2026-08-15 : rien n'est installé côté Windows.** Tout part donc de la partie 1.
+
+## Par quoi commencer
+
+Deux choses sont attendues de ton côté, et elles sont indépendantes :
+
+| Priorité | Quoi | Pourquoi | Nécessite le build Dev ? |
+|---|---|---|---|
+| 1 | **Tester `PalKitBox`** (partie 3) | C'est le premier module réel : il exporte ta Palbox en JSON. Il valide d'un coup une trentaine d'entrées de `sdk-notes.md` | **Non** — le build joueur suffit |
+| 2 | **Le dump `CTRL + J`** (partie 2) | Seule source restante pour les Blueprints (`WBP_`, `BP_`) dont M1 a besoin | Oui |
+| 3 | **Le spike `F5`** (partie 3) | Tranche la voie d'affichage de M1 | Oui |
+
+Le dump `CTRL + H` (headers) **n'est plus nécessaire** : les mêmes signatures sont publiées
+dans le `PalworldModdingKit`, à jour pour la 1.0, et sont déjà dépouillées dans
+`docs/sdk-notes.md`.
+
 ---
 
 ## Partie 1 — Installation d'UE4SS (à faire une seule fois)
@@ -63,7 +79,8 @@ qu'il n'est pas franchi.
 
 ## Partie 2 — Générer les dumps
 
-Ces dumps sont ce qui me permet d'arrêter de deviner. Sans eux, je travaille à l'aveugle.
+Ces dumps sont ce qui me permet d'arrêter de deviner. Il en reste **deux** qui comptent : les
+headers, eux, sont désormais récupérés en ligne (voir `scripts/fetch-headers.sh`).
 
 > **Sur un monde de test, jamais sur la sauvegarde principale.** Les dumps sont en lecture
 > seule, mais le build Dev est instable par nature et on ne prend pas ce risque.
@@ -72,10 +89,10 @@ Jeu lancé, monde de test chargé :
 
 | Ordre | Touches | Produit | Priorité |
 |---|---|---|---|
-| 1 | **`CTRL + J`** | `UE4SS_ObjectDump.txt` — tous les objets | **la plus haute** |
-| 2 | **`CTRL + H`** | headers C++ / SDK avec offsets | haute |
-| 3 | **`CTRL + NUM_6`** | fichier `.usmap` | moyenne |
-| 4 | **`CTRL + NUM_7`** | dump de tous les acteurs | voir ci-dessous |
+| 1 | **`CTRL + J`** | `UE4SS_ObjectDump.txt` — tous les objets, **avec les Blueprints** | **la plus haute** |
+| 2 | **`CTRL + NUM_7`** | dump de tous les acteurs | haute — voir ci-dessous |
+| 3 | ~~`CTRL + H`~~ | headers C++ / SDK | **plus nécessaire** — remplacé par les headers publics 1.0. À ne faire que si je te le demande pour un contrôle croisé |
+| 4 | **`CTRL + NUM_6`** | fichier `.usmap` | facultative — sert aux outils de sauvegarde, pas à PalKit |
 
 Chaque dump prend de quelques secondes à une minute ; le jeu peut se figer pendant
 l'opération, c'est normal.
@@ -137,6 +154,38 @@ supportable — utilise-la plutôt que de redémarrer.
 ---
 
 ## Protocole par module
+
+### PalKitBox — export de la Palbox *(à tester en premier)*
+
+**Ce qu'on cherche à savoir :** la chaîne de lecture déduite des headers 1.0 tient-elle en jeu ?
+Le mod parcourt les pages de la Palbox et écrit un JSON. Il **ne modifie rien** : aucun hook,
+aucun setter — un échec ne peut pas abîmer une sauvegarde.
+
+Il n'a besoin **ni du build Dev, ni du spike, ni de la Palbox ouverte à l'écran**.
+
+- Copier : `dist\PalKitBox\` → dossier Mods ; ajouter `PalKitBox : 1` à `mods.txt`
+- Lancer, charger un monde (de test de préférence, mais une vraie partie est plus parlante :
+  plus il y a de Pals, mieux c'est)
+- En multi / serveur dédié : presser `INS` une fois le monde chargé
+- Presser **`F7`** → export JSON
+- Presser **`F8`** → même lecture, résumé dans le log seulement
+
+**Attendu dans `UE4SS.log` :** un bloc `======== Export Palbox ========`, une ligne
+`Palbox : N Pals, …`, trois exemples de Pals, puis `export ecrit : <chemin>`.
+
+**À me renvoyer :**
+1. `UE4SS.log`
+2. **le fichier JSON produit** (il est écrit à côté du mod, nommé `palbox-export-<date>.json`)
+3. de mémoire : le nombre de Pals que tu as réellement en Palbox, pour comparer
+
+Le JSON contient un tableau `warnings` : c'est le cœur du test. Chaque ligne y est un champ
+que le Lua n'a pas su lire. Vide = toutes les entrées 📘 de `sdk-notes.md` passent en ✅.
+
+| Résultat | Ce qu'on en fait |
+|---|---|
+| JSON complet, `warnings` vide | La chaîne headers → Lua est prouvée. M2 v1 (recherche/tri) démarre |
+| JSON produit, quelques `warnings` | On corrige champ par champ — c'est le cas le plus probable (`FFixedPoint64`, énumérations) |
+| `Palbox inaccessible` dans le log | `GetPalStorage` ne répond pas : je reprends par le `PlayerState` |
 
 ### PalKitSpike — sonde de faisabilité du rendu
 

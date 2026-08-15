@@ -3,15 +3,15 @@
 Suite de mods QoL **client-side** pour **Palworld 1.0** (PC / Steam / Windows), en **Lua UE4SS
 pur**.
 
-> **État : Phase 0.** Infrastructure et reconnaissance. Aucun module n'est encore
-> implémenté — voir [Feuille de route](#feuille-de-route).
+> **État : premier module en test.** `PalKitBox` exporte la Palbox en JSON et attend son
+> premier passage en jeu — voir [Feuille de route](#feuille-de-route).
 
 ## Modules prévus
 
 | ID | Module | Contenu | État |
 |----|--------|---------|------|
 | M1 | Minimap | Minimap live avec marqueurs | bloqué par le spike de rendu |
-| M2 | Recherche Palbox | Recherche multi-critères + détection de doublons dominés | en attente des dumps |
+| M2 | Recherche Palbox | Recherche multi-critères + détection de doublons dominés | **v0 livrée** (`PalKitBox`, export JSON) — à valider en jeu |
 | M3 | Recherche Palpedia | Même moteur de requête sur le Paldeck | après M2 |
 | M4 | Breeding | CombiRank, planificateur, multi-fermes, tracker de session | après M3 |
 
@@ -87,10 +87,16 @@ qui se répète est résumée une fois par minute plutôt que d'inonder le fichi
 Le code est développé sous Linux, le jeu tourne sous Windows — d'où deux scripts :
 
 ```bash
+./scripts/fetch-headers.sh      # headers Pal 1.0 dans reference/ (hors git) — à faire une fois
 ./scripts/build.sh              # contrôle syntaxique + tests + zips dans dist/
-./scripts/build.sh PalKitSpike  # un seul module
+./scripts/build.sh PalKitBox    # un seul module
 lua scripts/test-shared.lua     # tests de la lib commune, hors jeu
 ```
+
+`fetch-headers.sh` récupère les 3 670 headers UHT de Palworld 1.0 publiés dans
+[`localcc/PalworldModdingKit`](https://github.com/localcc/PalworldModdingKit). C'est
+l'équivalent du dump `CTRL + H` d'UE4SS, sans avoir à lancer le jeu : c'est de là que vient
+tout ce qui est marqué 📘 dans `docs/sdk-notes.md`.
 
 ```powershell
 .\scripts\install-dev.ps1 -Mod PalKitSpike   # déploiement côté Windows
@@ -101,10 +107,12 @@ lua scripts/test-shared.lua     # tests de la lib commune, hors jeu
 ## Feuille de route
 
 - [x] Phase 0 — squelette, lib commune, logging, config, guide de dump
-- [ ] **Spike de rendu** — prouver qu'un affichage est possible en Lua pur ⬅️ *en cours*
+- [x] Passe headers 1.0 — matrice de cibles remplie hors jeu (`docs/sdk-notes.md`)
+- [ ] **M2 v0 — export Palbox** (`PalKitBox`) : code livré, **attend son premier run en jeu** ⬅️ *en cours*
+- [ ] **Spike de rendu** — prouver qu'un affichage est possible en Lua pur (bloque M1, pas M2)
 - [ ] M1 V1 — minimap socle
 - [ ] M1 V2 — marqueurs et perf
-- [ ] M2 — recherche Palbox
+- [ ] M2 v1 — recherche et tri dans l'écran Palbox
 - [ ] M2+ — scoring de dominance
 - [ ] M3 — Palpedia
 - [ ] M4 — breeding
