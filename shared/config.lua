@@ -218,11 +218,24 @@ function config.new(opts)
 
         local content = readFile(self.path)
         if not content then
-            if logger then
-                logger.info("config: aucun settings.json, defauts appliques (%s)", self.path)
-            end
             self.values = deepMerge(defaults, nil, logger, nil)
             self.loaded = true
+
+            -- Ecrire le fichier plutot que de se contenter des defauts en memoire : sans
+            -- lui, il n'y a rien a editer et rien qui documente les reglages disponibles.
+            -- L'utilisateur ne doit pas avoir a deviner la structure d'un fichier qui
+            -- n'existe pas -- constate le 2026-08-15, Lucas cherchait un settings.json que
+            -- le mod n'avait jamais cree.
+            if self.save() then
+                if logger then
+                    logger.always("INFO", "config: settings.json cree avec les valeurs par "
+                        .. "defaut -> %s", self.path)
+                    logger.always("INFO", "config: l'editer puis presser INS pour recharger.")
+                end
+            elseif logger then
+                logger.info("config: aucun settings.json et creation impossible, "
+                    .. "defauts appliques en memoire (%s)", self.path)
+            end
             return false
         end
 

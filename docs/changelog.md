@@ -4,6 +4,13 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
 
 ## [Non publié]
 
+### Corrigé — 2026-08-15 — Le `settings.json` est créé au premier lancement
+
+`config.load()` se contentait d'appliquer ses défauts en mémoire quand le fichier était
+absent. Il n'y avait donc **rien à éditer, et rien qui documente les réglages disponibles** —
+Lucas a cherché un `settings.json` que le mod n'avait jamais écrit. Le fichier est désormais
+créé avec les valeurs par défaut, requêtes comprises, et le log dit où il est.
+
 ### Ajouté — 2026-08-15 — M2 v1 : recherche, tri et doublons dominés
 
 - `shared/palfilter.lua` — moteur de requête **pur** : `match`, `filter`, `sort`, `top`,

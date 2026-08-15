@@ -103,6 +103,31 @@ merged = config.deepMerge(defaults, { minimap = 5 }, nil, nil)
 check("objet ecrase par scalaire -> defaut", merged.minimap.size == 200)
 
 -- l'original n'est pas mute
+-- Un settings.json absent doit être ÉCRIT, pas seulement suppléé en mémoire : sans fichier,
+-- il n'y a rien à éditer et rien qui documente les réglages disponibles.
+do
+    local sandbox = (os.getenv("TMPDIR") or "/tmp") .. "/palkit-config-autocreate"
+    os.execute("rm -rf '" .. sandbox .. "' && mkdir -p '" .. sandbox .. "'")
+
+    local previous = config.resolveModDir
+    config.resolveModDir = function() return sandbox, "test" end
+
+    local cfg = config.new({ modName = "AutoCreate",
+                             defaults = { keys = { search = "F12" }, queries = { { name = "x" } } } })
+    local existait = cfg.load()
+    config.resolveModDir = previous
+
+    local handle = io.open(sandbox .. "/settings.json", "r")
+    local written = handle and handle:read("*a") or nil
+    if handle then handle:close() end
+
+    check("load() signale l'absence de fichier", existait == false)
+    check("load() cree le settings.json manquant", written ~= nil)
+    check("le fichier cree contient les defauts",
+          written ~= nil and written:find("queries", 1, true) ~= nil
+          and written:find("F12", 1, true) ~= nil)
+end
+
 config.deepMerge(defaults, { minimap = { size = 999 } }, nil, nil)
 check("defauts non mutes", defaults.minimap.size == 200, defaults.minimap.size)
 
