@@ -11,7 +11,32 @@ renvoie les logs. Chaque étape est donc explicite jusqu'à la touche à presser
 > rassurant des runs précédents. C'est corrigé : il compte maintenant ce qu'il lit vraiment,
 > et deux nouvelles voies contournent la pagination. **Tu peux sauter les parties 1 et 2.**
 
-## Par quoi commencer — 7ᵉ passe
+## Par quoi commencer — 8ᵉ passe
+
+**Une seule question, et elle décide de tout M2+** : peut-on écrire **notre** texte dans un
+widget du jeu ? Afficher un widget est prouvé (la boussole), mais un widget qui affiche le
+contenu du jeu ne sert à rien pour montrer des résultats de recherche.
+
+Le dump a déjà éliminé deux impasses sans lancer le jeu : `UTextBlock::SetText` n'est pas
+exposé sur ce build, mais une vingtaine de widgets ont leur propre setter acceptant du texte
+libre, et `Conv_StringToText` permet de fabriquer le `FText` depuis Lua.
+
+| Quoi | Comment |
+|---|---|
+| **`F4`** (nouveau, dans `PalKitSpike`) | Instancie un widget candidat, l'affiche, et tente d'y écrire `PalKit : 743 Pals, 14 doublons domines` |
+| **`F6`** puis **`F4`** | Cible suivante. Six candidats, du plus grand (une fenêtre popup) au plus petit |
+
+**Ce que je te demande de regarder, c'est l'écran** — le log dira si l'appel a réussi, mais
+seul toi peux dire si la phrase est **lisible**. Pour chaque cible, le log affiche
+`IsVisible` et `DesiredSize`, puis pose la question. Dès qu'une cible affiche la phrase,
+arrête-toi et dis-le-moi : c'est le support d'affichage de M2+, et je construis dessus.
+
+Si les six échouent, ce n'est pas un mur non plus — ça voudra dire qu'il faut peupler un
+widget par ses données plutôt que par son texte, et le dump donne d'autres pistes.
+
+---
+
+## 7ᵉ passe (faite)
 
 **M2 v0 est validé** (743 Pals, 0 coquille) et **l'affichage en Lua pur est prouvé**
 (`WBP_Ingame_Compass_C` en 800 × 122). La nouveauté à tester est **`F12` : la recherche**.

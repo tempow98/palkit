@@ -4,6 +4,27 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
 
 ## [Non publié]
 
+### Ajouté — 2026-08-15 — Sonde texte (`F4`) : la brique qui bloque M2+
+
+Afficher les résultats de recherche en jeu bute sur une question que le run 6 n'a **pas**
+tranchée : afficher un widget du jeu est prouvé, y mettre **notre** texte ne l'est pas. Un
+widget qui affiche le contenu du jeu ne sert à rien pour montrer une liste de Pals filtrée.
+
+Plutôt que d'écrire l'UI sur une hypothèse — l'erreur que ce projet a déjà payée deux fois —
+la question est isolée dans une sonde. Le dépouillement du dump a éliminé deux impasses
+**avant** d'écrire une ligne :
+
+- `UTextBlock::SetText` **n'est pas exposé** sur ce build (`GetText` l'est, `SetText` non) :
+  écrire dans un `TextBlock` nu est hors de portée ;
+- mais une vingtaine de widgets du jeu exposent leur **propre** setter prenant un
+  `TextProperty` — donc du texte libre — et `KismetTextLibrary:Conv_StringToText` existe avec
+  son CDO pour fabriquer le `FText` depuis une chaîne Lua.
+
+- `mods/PalKitSpike` — touche **`F4`** : instancie un widget candidat, l'affiche, y écrit une
+  phrase de test, et mesure 500 ms plus tard. Une cible par pression, six candidats classés du
+  plus grand contenant (`WBP_CommonPopupWindow_C`, une fenêtre) au plus petit
+  (`WBP_NoData_C`), chacun avec son setter (`SetMainText`, `SetLogText`, `SetText`)
+
 ### Corrigé — 2026-08-15 — Le `settings.json` est créé au premier lancement
 
 `config.load()` se contentait d'appliquer ses défauts en mémoire quand le fichier était

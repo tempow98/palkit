@@ -26,6 +26,24 @@
     suite. Aucun palier n'interrompt les suivants.
 
     F6 retire ce que F5 a ajoute, pour reessayer sans relancer le jeu.
+
+    ------------------------------------------------------------------------------------
+    F4 -- SECONDE QUESTION, POSEE APRES LA PREMIERE REPONSE (2026-08-15)
+    ------------------------------------------------------------------------------------
+    Le run 6 a repondu oui a la question ci-dessus : `WBP_Ingame_Compass_C` s'affiche en
+    800x122, en Lua pur, sans .pak. M2+ (afficher les resultats de recherche en jeu) bute
+    maintenant sur une question differente : peut-on mettre NOTRE texte dans un widget du
+    jeu ? Un widget du jeu qui affiche le contenu du jeu ne sert a rien pour ca.
+
+    Le dump a deja elimine deux impasses, sans lancer le jeu :
+      * `UTextBlock::SetText` n'est pas expose sur ce build -- ecrire dans un TextBlock nu
+        est hors de portee ;
+      * en revanche une vingtaine de widgets exposent un setter prenant un TextProperty
+        (texte libre), et `KismetTextLibrary:Conv_StringToText` permet de fabriquer le
+        FText depuis une chaine Lua.
+
+    F4 essaie ces widgets un par un. Le premier qui affiche notre phrase devient le
+    support d'affichage de M2+.
 ]]
 
 local log    = require("log")
@@ -42,6 +60,7 @@ local state = {
     createdWidget = nil,
     candidates    = {},
     attempt       = 0, -- nombre de F5 : sert a changer de cible a chaque essai
+    textAttempt   = 0, -- idem pour la sonde texte (F4)
 }
 
 -- ------------------------------------------------------------------ configuration
@@ -65,6 +84,38 @@ local DEFAULTS = {
         -- Tires de la convention reelle WBP_<Domaine><Element>_C.
         namePatterns   = { "compass", "map", "minimap", "radar", "overalluilayout" },
         maxCandidates  = 40,   -- borne de log : un dump complet noierait UE4SS.log
+    },
+
+    -- ---------------------------------------------------------------- sonde texte (F4)
+    --
+    -- Afficher un widget du jeu est prouve (run 6). Y mettre NOTRE texte ne l'est pas, et
+    -- c'est ce dont M2+ a besoin : un panneau de resultats de recherche.
+    --
+    -- Le dump a tranche deux points avant meme d'ecrire une ligne :
+    --   * `UTextBlock::SetText` n'est PAS expose sur ce build (GetText l'est, SetText non) :
+    --     on ne peut pas ecrire dans un TextBlock nu ;
+    --   * mais une vingtaine de widgets du jeu exposent leur propre setter prenant un
+    --     **TextProperty**, donc du texte libre -- et `KismetTextLibrary:Conv_StringToText`
+    --     existe, avec son CDO, pour fabriquer le FText depuis une chaine Lua.
+    --
+    -- Les candidats sont classes du plus grand contenant (une fenetre, de quoi loger
+    -- plusieurs lignes de resultats) au plus petit.
+    textProbe = {
+        message = "PalKit : 743 Pals, 14 doublons domines",
+        targets = {
+            { path = "/Game/Pal/Blueprint/UI/UserInterface/Common/WBP_CommonPopupWindow.WBP_CommonPopupWindow_C",
+              setter = "SetMainText" },
+            { path = "/Game/Pal/Blueprint/UI/Log/WBP_NoticeLog.WBP_NoticeLog_C",
+              setter = "SetLogText" },
+            { path = "/Game/Pal/Blueprint/UI/UserInterface/InGame/Notice/WBP_Notice.WBP_Notice_C",
+              setter = "SetText" },
+            { path = "/Game/Pal/Blueprint/UI/Log/WBP_BlinkedLog.WBP_BlinkedLog_C",
+              setter = "SetLogText" },
+            { path = "/Game/Pal/Blueprint/UI/UserInterface/InGame/ItemGet/WBP_ItemGet.WBP_ItemGet_C",
+              setter = "SetText" },
+            { path = "/Game/Pal/Blueprint/UI/UserInterface/MainMenu/WBP_NoData.WBP_NoData_C",
+              setter = "SetText" },
+        },
     },
 }
 
@@ -449,6 +500,112 @@ local function stage4_sideEffects(ctx)
         .. "toujours (deplacement, camera) ?")
 end
 
+-- ------------------------------------------------------------------ sonde texte (F4)
+
+--- Fabrique un FText a partir d'une chaine Lua.
+-- Passe par le CDO de KismetTextLibrary : les UFUNCTION statiques s'appellent ainsi
+-- (prouve au run 3 avec PalUtility). Sans cette conversion, aucun setter de texte du jeu
+-- n'est utilisable -- ils prennent tous un TextProperty, jamais une chaine.
+local function toText(str)
+    local lib = StaticFindObject("/Script/Engine.Default__KismetTextLibrary")
+    if not safe.isValid(lib) then
+        logger.always("ERROR", "KismetTextLibrary introuvable : pas de conversion possible.")
+        return nil
+    end
+
+    local ok, text = pcall(function() return lib:Conv_StringToText(str) end)
+    if not ok then
+        logger.always("ERROR", "Conv_StringToText a leve : %s", tostring(text))
+        return nil
+    end
+    return text
+end
+
+--- Essaie d'afficher NOTRE texte dans un widget du jeu. Une cible par pression.
+local function runTextProbe()
+    logger.always("INFO", "======== SONDE TEXTE : debut ========")
+
+    local probe   = cfg.get("textProbe", DEFAULTS.textProbe)
+    local targets = probe.targets or {}
+    if #targets == 0 then
+        logger.always("ERROR", "Aucune cible declaree dans textProbe.targets.")
+        return
+    end
+
+    local index = (state.textAttempt % #targets) + 1
+    state.textAttempt = state.textAttempt + 1
+    local target = targets[index]
+
+    logger.always("INFO", "Cible %d/%d : %s  (setter : %s)",
+        index, #targets, target.path, target.setter)
+    logger.always("INFO", "F6 puis F4 pour essayer la cible suivante.")
+
+    local ctx = stage1_context()
+    if not ctx then
+        logger.always("ERROR", "======== SONDE TEXTE interrompue (pas de contexte) ========")
+        return
+    end
+
+    safe.gameThread(logger, "sonde texte", function()
+        local class = StaticFindObject(target.path)
+        if not safe.isValid(class) then
+            logger.always("ERROR", "Classe introuvable (package non charge ?) : %s", target.path)
+            return
+        end
+
+        local lib = StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")
+        local okCreate, widget = pcall(function()
+            return lib:Create(ctx.world, class, ctx.controller)
+        end)
+        if not okCreate or not safe.isValid(widget) then
+            logger.always("ERROR", "Create a echoue : %s", tostring(widget))
+            return
+        end
+
+        pcall(function() widget:AddToViewport(0) end)
+        state.createdWidget = widget
+        logger.always("INFO", "Widget affiche : %s", nameOf(widget))
+
+        -- L'etape qui compte : notre texte, pas celui du jeu.
+        local text = toText(probe.message or "PalKit")
+        if text == nil then return end
+
+        local okSet, err = pcall(function() widget[target.setter](widget, text) end)
+        if not okSet then
+            logger.always("ERROR", "%s a leve : %s -- ce widget n'accepte pas notre texte.",
+                target.setter, tostring(err))
+        else
+            logger.always("INFO", "%s appele sans erreur.", target.setter)
+        end
+
+        -- Mesure differee : Slate n'a pas encore fait sa passe de layout (leçon du run 4).
+        pcall(ExecuteWithDelay, 500, function()
+            safe.gameThread(logger, "mesure sonde texte", function()
+                local _, visible = safe.call(logger, "IsVisible",
+                    function() return widget:IsVisible() end)
+                local _, size = safe.call(logger, "GetDesiredSize",
+                    function() return widget:GetDesiredSize() end)
+
+                local x, y = 0, 0
+                if size ~= nil then pcall(function() x, y = size.X, size.Y end) end
+
+                logger.always("INFO", "IsVisible   : %s", tostring(visible))
+                logger.always("INFO", "DesiredSize : %sx%s", tostring(x), tostring(y))
+
+                if (tonumber(x) or 0) > 0 and (tonumber(y) or 0) > 0 then
+                    logger.always("INFO", ">>> Ce widget occupe une place a l'ecran. "
+                        .. "LIS-TU « %s » ? <<<", tostring(probe.message))
+                    logger.always("INFO", "Si oui : M2+ a son support d'affichage.")
+                else
+                    logger.always("WARN", "Taille nulle : ce widget ne s'affiche pas seul. "
+                        .. "F6 puis F4 pour la cible suivante.")
+                end
+                logger.always("INFO", "======== SONDE TEXTE : fin ========")
+            end)
+        end)
+    end)
+end
+
 -- ------------------------------------------------------------------ orchestration
 
 local function runProbe()
@@ -501,7 +658,8 @@ logger.banner({
     game  = "Palworld 1.0.x",
 })
 
-logger.always("INFO", "Spike de rendu -- F5 lance la sonde, F6 retire le widget ajoute.")
+logger.always("INFO", "Spike de rendu -- F5 affiche un widget, F4 tente d'y ecrire NOTRE "
+    .. "texte, F6 retire ce qui a ete ajoute.")
 
 if type(Key) ~= "table" then
     logger.fatalOnce("La table globale Key est absente : build UE4SS inattendu. "
@@ -509,4 +667,5 @@ if type(Key) ~= "table" then
 else
     safe.keybind(logger, "F5 (sonde)", Key.F5, nil, runProbe)
     safe.keybind(logger, "F6 (nettoyage)", Key.F6, nil, cleanup)
+    safe.keybind(logger, "F4 (sonde texte)", Key.F4, nil, runTextProbe)
 end
