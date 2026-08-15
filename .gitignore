@@ -1,0 +1,21 @@
+# Paquets générés par build.sh
+/dist/
+
+# Clones tiers en lecture seule (brief §7) — jamais commités
+/reference/
+
+# Dumps du jeu : volumineux, machine-spécifiques, transitent par Drive
+*.usmap
+UE4SS_ObjectDump.txt
+UE4SS.log
+acteurs-*.txt
+
+# Config générée à l'exécution
+settings.json
+settings.json.bak
+settings.json.tmp
+
+# Divers
+*.tmp
+.DS_Store
+Thumbs.db
