@@ -45,9 +45,10 @@
 local log    = require("log")
 local safe   = require("safe")
 local config = require("config")
-local query  = require("query")
-local palio  = require("palio")
-local json   = require("json") -- pour json.array : marquer les listes vides comme listes
+local query     = require("query")
+local palio     = require("palio")
+local json      = require("json") -- pour json.array : marquer les listes vides comme listes
+local palfilter = require("palfilter") -- M2 v1 : filtres, tri, dominance
 
 local MOD_NAME = "PalKitBox"
 local VERSION  = "0.1.0"
@@ -65,6 +66,42 @@ local DEFAULTS = {
         -- Au 2e run, une pression sur F9 declenchait les deux -- un dump de 127 Mo qui fige
         -- le jeu, juste avant la sonde. Surchargeable dans settings.json.
         probe   = "F11", -- sonde de diagnostic : quelle voie d'acces a la Palbox repond ?
+        search  = "F12", -- execute les requetes de `queries` ci-dessous
+    },
+
+    -- M2 v1 -- LES REQUETES SE DECLARENT ICI, dans settings.json.
+    --
+    -- Il n'y a pas de champ de saisie en jeu, et il n'y en aura pas tant que la brique de
+    -- rendu n'est pas ecrite. Plutot que d'attendre, les requetes sont declaratives : on
+    -- edite settings.json, on presse F12, on lit le resultat. C'est aussi ce qui les rend
+    -- rejouables a l'identique et versionnables.
+    --
+    -- Criteres : species (sous-chaine), speciesExact, levelMin/levelMax, ivTotalMin,
+    -- ivMin { hp, melee, shot, defense }, gender (1 male / 2 femelle), rankMin,
+    -- rare, awakening, locked, passives (tous), passivesAny (au moins un), page.
+    -- Tri : sort = { { field = "ivTotal", desc = true }, ... }  -- champ ou "ivTotal".
+    -- `dominated = true` remplace le filtre par la recherche des doublons domines.
+    queries = {
+        {
+            name  = "meilleurs IVs",
+            sort  = { { field = "ivTotal", desc = true } },
+            limit = 20,
+        },
+        {
+            name     = "legendaires",
+            criteria = { passives = { "Legend" } },
+            sort     = { { field = "ivTotal", desc = true } },
+        },
+        {
+            name     = "rares",
+            criteria = { rare = true },
+            sort     = { { field = "level", desc = true } },
+        },
+        {
+            -- Le coeur de M2 : ceux qu'on peut condenser ou relacher sans rien perdre.
+            name      = "doublons domines",
+            dominated = true,
+        },
     },
     -- Garde-fou : la Palbox fait 30 pages en 1.0, mais un serveur moddé peut annoncer
     -- n'importe quoi. On ne boucle jamais sur une borne venue du jeu sans plafond.
@@ -531,6 +568,68 @@ local function logSummary(report)
     end
 end
 
+-- ------------------------------------------------------------------ M2 v1 : requetes
+
+--- Une ligne lisible pour un Pal, dans le log.
+local function palLine(pal)
+    return string.format("%-26s niv %-3s IV=%-3d %s%s",
+        tostring(pal.species), tostring(pal.level), palfilter.ivTotal(pal),
+        pal.rare and "[rare] " or "",
+        table.concat(pal.passives or {}, ", "))
+end
+
+--- Execute une requete declaree dans settings.json.
+-- @return table { name, count, pals } pour le rapport JSON
+local function runQuery(query, pals)
+    local name = tostring(query.name or "sans nom")
+
+    -- Recherche de doublons : une requete a part entiere, pas un filtre.
+    if query.dominated then
+        local dominated = palfilter.findDominated(pals, { ignoreGender = query.ignoreGender })
+
+        logger.always("INFO", "--- %s : %d Pal(s) domine(s) ---", name, #dominated)
+        for index = 1, math.min(#dominated, query.limit or 15) do
+            local entry = dominated[index]
+            logger.always("INFO", "  p%d/s%-2d %s", entry.pal.page, entry.pal.slot,
+                palLine(entry.pal))
+            logger.always("INFO", "      domine par p%d/s%-2d IV=%d%s",
+                entry.by.page, entry.by.slot, palfilter.ivTotal(entry.by),
+                entry.equal and "  (identiques)" or "")
+        end
+        if #dominated > (query.limit or 15) then
+            logger.always("INFO", "  ... et %d autre(s), tous dans le JSON",
+                #dominated - (query.limit or 15))
+        end
+
+        local rows = {}
+        for _, entry in ipairs(dominated) do
+            rows[#rows + 1] = {
+                species = entry.pal.species,
+                page = entry.pal.page, slot = entry.pal.slot,
+                ivTotal = palfilter.ivTotal(entry.pal),
+                dominatedByPage = entry.by.page, dominatedBySlot = entry.by.slot,
+                dominatedByIvTotal = palfilter.ivTotal(entry.by),
+                identical = entry.equal or false,
+            }
+        end
+        return { name = name, kind = "dominated", count = #dominated,
+                 results = json.array(rows) }
+    end
+
+    local matched = palfilter.filter(pals, query.criteria)
+    local sorted  = palfilter.top(matched, query.sort, query.limit)
+
+    logger.always("INFO", "--- %s : %d resultat(s)%s ---", name, #matched,
+        query.limit and #matched > query.limit
+            and string.format(", %d affiches", query.limit) or "")
+    for index = 1, math.min(#sorted, 15) do
+        logger.always("INFO", "  %2d. %s", index, palLine(sorted[index]))
+    end
+
+    return { name = name, kind = "filter", count = #matched,
+             results = json.array(sorted) }
+end
+
 -- ------------------------------------------------------------------ sonde de diagnostic
 --
 -- Pourquoi cette touche existe : le premier essai en jeu (2026-08-15) a rendu une seule
@@ -740,6 +839,62 @@ local function runExport()
     end)
 end
 
+--- M2 v1 : lit la Palbox, puis execute toutes les requetes declarees.
+local function runSearch()
+    safe.gameThread(logger, "recherche Palbox", function()
+        logger.always("INFO", "======== Recherche Palbox : debut ========")
+
+        local start = collect()
+        if start == nil then
+            logger.always("ERROR", "======== Recherche interrompue ========")
+            return
+        end
+
+        start(function(report)
+            local queries = cfg.get("queries", DEFAULTS.queries)
+            if type(queries) ~= "table" or #queries == 0 then
+                logger.always("WARN", "Aucune requete declaree dans settings.json (`queries`).")
+                logger.always("INFO", "======== Recherche Palbox : fin ========")
+                return
+            end
+
+            logger.always("INFO", "Base : %d Pals lus. %d requete(s) a executer.",
+                report.meta.palCount, #queries)
+
+            -- Les coquilles fausseraient tout : un Pal sans espece ne peut ni etre filtre
+            -- ni etre compare. On requete sur ce qui a vraiment ete lu.
+            local base = {}
+            for _, pal in ipairs(report.pals) do
+                if pal.species ~= nil then base[#base + 1] = pal end
+            end
+
+            local out = {
+                meta = {
+                    mod = MOD_NAME, version = VERSION,
+                    generatedAt = os.date("%Y-%m-%d %H:%M:%S"),
+                    palCount = #base,
+                },
+                queries = {},
+            }
+
+            for _, q in ipairs(queries) do
+                local ok, result = safe.call(logger, "requete " .. tostring(q.name),
+                    runQuery, q, base)
+                if ok and result then out.queries[#out.queries + 1] = result end
+            end
+            out.queries = json.array(out.queries)
+
+            if writer == nil then
+                writer = palio.new({ modName = MOD_NAME, logger = logger, prefix = "palbox" })
+            end
+            local dropped = {}
+            writer.writeJson("recherche", sanitize(out, "recherche", dropped))
+
+            logger.always("INFO", "======== Recherche Palbox : fin ========")
+        end)
+    end)
+end
+
 local function runSummary()
     safe.gameThread(logger, "resume Palbox", function()
         local start = collect()
@@ -773,8 +928,12 @@ else
     safe.keybind(logger, summaryKey .. " (resume Palbox)", Key[summaryKey], nil, runSummary)
     safe.keybind(logger, probeKey .. " (sonde Palbox)", Key[probeKey], nil, runDiagnostics)
 
+    local searchKey = cfg.get("keys.search", DEFAULTS.keys.search)
+    safe.keybind(logger, searchKey .. " (recherche)", Key[searchKey], nil, runSearch)
+
     logger.always("INFO", "Palbox : %s exporte en JSON, %s resume dans le log, "
-        .. "%s diagnostique les voies d'acces.", exportKey, summaryKey, probeKey)
+        .. "%s diagnostique les voies d'acces, %s execute les requetes.",
+        exportKey, summaryKey, probeKey, searchKey)
 end
 
 -- Un changement de monde invalide tous les objets caches. On ne peut pas s'accrocher a un

@@ -4,6 +4,29 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
 
 ## [Non publié]
 
+### Ajouté — 2026-08-15 — M2 v1 : recherche, tri et doublons dominés
+
+- `shared/palfilter.lua` — moteur de requête **pur** : `match`, `filter`, `sort`, `top`,
+  `dominates`, `findDominated`. Aucune dépendance au jeu — ce qui change tout pour ce
+  projet : chaque aller-retour de test coûte une session de jeu à Lucas, alors qu'un module
+  pur se valide **sur l'export réel**. Les 743 Pals du run 6 ont servi de banc d'essai avant
+  la moindre ligne livrée. Le même moteur servira tel quel à M3 (Paldeck)
+- `mods/PalKitBox` — touche **`F12`** : exécute les requêtes déclarées dans `settings.json`,
+  résume dans le log et écrit `palbox-recherche-<date>.json`
+- Quatre requêtes livrées par défaut : meilleurs IVs, légendaires, rares, **doublons dominés**
+- `scripts/test-shared.lua` — 120 tests (28 de plus)
+
+**La dominance repose sur trois choix explicites**, tous documentés dans le module : même
+espèce ; **même genre par défaut** (conseiller de relâcher la seule femelle d'une espèce
+serait un mauvais conseil pour l'élevage — `ignoreGender` pour passer outre) ; et l'on compare
+**l'inné, pas l'acquis** — IVs et passifs sont fixés à la naissance, tandis que niveau,
+condensation et âmes se rattrapent. Un niveau 1 aux IVs parfaits n'est donc pas dominé par un
+niveau 50 médiocre. Deux Pals strictement identiques ne se dominent pas mutuellement : seul le
+second est signalé, sinon on relâcherait la paire entière.
+
+Sur l'export réel : **14 dominés sur 743**, calculés en 2 ms, sans une seule incohérence
+(aucun « dominé » n'a d'IV supérieur à son dominant).
+
 ### Validé — 2026-08-15 (run 6) — M2 v0 terminé, et M1 débloqué
 
 **Deux verrous tombent le même soir.**

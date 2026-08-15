@@ -11,7 +11,7 @@ pur**.
 | ID | Module | Contenu | État |
 |----|--------|---------|------|
 | M1 | Minimap | Minimap live avec marqueurs | bloqué par le spike de rendu |
-| M2 | Recherche Palbox | Recherche multi-critères + détection de doublons dominés | **v0 livrée** (`PalKitBox`, export JSON) — à valider en jeu |
+| M2 | Recherche Palbox | Recherche multi-critères + détection de doublons dominés | **v0 validée en jeu** (743 Pals exportés) ; **v1 livrée** (requêtes, tri, dominance) |
 | M3 | Recherche Palpedia | Même moteur de requête sur le Paldeck | après M2 |
 | M4 | Breeding | CombiRank, planificateur, multi-fermes, tracker de session | après M3 |
 
@@ -108,14 +108,43 @@ tout ce qui est marqué 📘 dans `docs/sdk-notes.md`.
 
 - [x] Phase 0 — squelette, lib commune, logging, config, guide de dump
 - [x] Passe headers 1.0 — matrice de cibles remplie hors jeu (`docs/sdk-notes.md`)
-- [ ] **M2 v0 — export Palbox** (`PalKitBox`) : code livré, **attend son premier run en jeu** ⬅️ *en cours*
-- [ ] **Spike de rendu** — prouver qu'un affichage est possible en Lua pur (bloque M1, pas M2)
+- [x] **M2 v0 — export Palbox** (`PalKitBox`) : **validé en jeu le 2026-08-15** — 743 Pals,
+      0 coquille, 32 pages en 8,2 s
+- [x] **Spike de rendu** — **répondu** : `Create()` + `AddToViewport()` fonctionnent en Lua
+      pur, `WBP_Ingame_Compass_C` s'affiche en 800 × 122. **Pas besoin de `.pak`**
+- [x] **M2 v1 — recherche, tri et doublons dominés** (`shared/palfilter.lua`, touche `F12`) :
+      moteur pur, validé sur l'export réel ⬅️ *à valider en jeu*
 - [ ] M1 V1 — minimap socle
 - [ ] M1 V2 — marqueurs et perf
-- [ ] M2 v1 — recherche et tri dans l'écran Palbox
-- [ ] M2+ — scoring de dominance
-- [ ] M3 — Palpedia
+- [ ] M2+ — affichage des résultats dans l'écran Palbox (dépend de la brique de rendu)
+- [ ] M3 — Palpedia (même moteur de requête)
 - [ ] M4 — breeding
+
+### M2 v1 — comment ça s'utilise
+
+Il n'y a pas de champ de saisie en jeu tant que la brique de rendu n'est pas écrite. Les
+requêtes sont donc **déclaratives** : on les écrit dans `settings.json`, on presse `F12`, on
+lit le résultat dans le log et dans `palbox-recherche-<date>.json`.
+
+```jsonc
+"queries": [
+  { "name": "combattants",
+    "criteria": { "ivMin": { "melee": 70 }, "levelMin": 40, "gender": 2 },
+    "sort": [ { "field": "ivTotal", "desc": true } ], "limit": 10 },
+
+  { "name": "a condenser", "dominated": true }
+]
+```
+
+Critères : `species` (sous-chaîne), `speciesExact`, `levelMin`/`levelMax`, `ivTotalMin`,
+`ivMin { hp, melee, shot, defense }`, `gender` (1 mâle / 2 femelle), `rankMin`, `rare`,
+`awakening`, `locked`, `passives` (tous), `passivesAny` (au moins un), `page`.
+
+**Doublons dominés** (`"dominated": true`) : liste les Pals qu'un autre surpasse sans
+contrepartie — même espèce, même genre, aucun IV inférieur, aucun passif exclusif. Ceux-là
+peuvent être condensés ou relâchés sans rien perdre. Le genre est pris en compte par défaut
+(`"ignoreGender": true` pour l'ignorer) : conseiller de relâcher la seule femelle d'une
+espèce serait un mauvais conseil pour l'élevage.
 
 ## Documentation
 

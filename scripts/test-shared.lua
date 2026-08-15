@@ -311,6 +311,94 @@ local objets = query.toList({
 }, true)
 check("toList garde les UObject quand on le demande", objets and objets[1] == slot)
 
+-- ---------------------------------------------------------------- palfilter (M2 v1)
+local pf = require("palfilter")
+
+local function pal(t)
+    t.ivs = t.ivs or { hp = 0, melee = 0, shot = 0, defense = 0 }
+    t.page = t.page or 0
+    t.slot = t.slot or 0
+    return t
+end
+
+local anubis = pal({ species = "Anubis", level = 40, gender = 1, rare = false,
+                     ivs = { hp = 80, melee = 70, shot = 60, defense = 50 },
+                     passives = { "Legend", "Swift" } })
+local anubisFaible = pal({ species = "Anubis", level = 50, gender = 1,
+                           ivs = { hp = 10, melee = 20, shot = 30, defense = 40 },
+                           passives = { "Swift" }, slot = 1 })
+local anubisFemelle = pal({ species = "Anubis", level = 5, gender = 2,
+                            ivs = { hp = 1, melee = 1, shot = 1, defense = 1 }, slot = 2 })
+local lamball = pal({ species = "Lamball", level = 3, gender = 1, slot = 3 })
+
+check("ivTotal somme les 4 IVs", pf.ivTotal(anubis) == 260, pf.ivTotal(anubis))
+check("ivTotal sur un Pal sans ivs", pf.ivTotal({}) == 0)
+
+check("match espece partielle insensible casse", pf.match(anubis, { species = "anu" }))
+check("match espece exacte", pf.match(anubis, { speciesExact = "Anubis" })
+      and not pf.match(anubis, { speciesExact = "Anub" }))
+check("match levelMin/Max", pf.match(anubis, { levelMin = 40, levelMax = 40 })
+      and not pf.match(anubis, { levelMin = 41 }))
+check("match gender", pf.match(anubis, { gender = 1 }) and not pf.match(anubis, { gender = 2 }))
+check("match ivTotalMin", pf.match(anubis, { ivTotalMin = 260 })
+      and not pf.match(anubis, { ivTotalMin = 261 }))
+check("match ivMin par statistique", pf.match(anubis, { ivMin = { hp = 80, defense = 50 } })
+      and not pf.match(anubis, { ivMin = { defense = 51 } }))
+check("match passives exige TOUS les passifs",
+      pf.match(anubis, { passives = { "Legend", "Swift" } })
+      and not pf.match(anubis, { passives = { "Legend", "Absent" } }))
+check("match passivesAny en exige un seul",
+      pf.match(anubis, { passivesAny = { "Absent", "Swift" } })
+      and not pf.match(anubis, { passivesAny = { "Absent" } }))
+check("match rare=false n'est pas ignore", pf.match(anubis, { rare = false })
+      and not pf.match(anubis, { rare = true }))
+check("match sans critere accepte tout", pf.match(anubis, {}) and pf.match(anubis, nil))
+
+local tous = { anubis, anubisFaible, anubisFemelle, lamball }
+check("filter conserve l'ordre", #pf.filter(tous, { species = "Anubis" }) == 3)
+
+local parIv = pf.sort(tous, { { field = "ivTotal", desc = true } })
+check("sort decroissant", parIv[1] == anubis and parIv[#parIv] == lamball)
+check("sort ne modifie pas la liste d'origine", tous[1] == anubis)
+
+-- Une valeur absente ne doit jamais prendre la tête d'un classement décroissant.
+local sansNiveau = pal({ species = "X", slot = 9 })
+local avecNiveau = pal({ species = "X", level = 10, slot = 8 })
+local parNiveau = pf.sort({ sansNiveau, avecNiveau }, { { field = "level", desc = true } })
+check("sort relegue les valeurs absentes", parNiveau[1] == avecNiveau)
+
+check("top limite le nombre", #pf.top(tous, { { field = "ivTotal", desc = true } }, 2) == 2)
+
+check("dominates : meilleur partout", (pf.dominates(anubis, anubisFaible)))
+check("dominates : pas dans l'autre sens", not (pf.dominates(anubisFaible, anubis)))
+check("dominates : especes differentes jamais", not (pf.dominates(anubis, lamball)))
+check("dominates : genre different protege par defaut",
+      not (pf.dominates(anubis, anubisFemelle)))
+check("dominates : genre ignorable a la demande",
+      (pf.dominates(anubis, anubisFemelle, { ignoreGender = true })))
+
+-- Un passif que l'autre n'a pas suffit à empêcher la dominance, même avec de meilleurs IVs.
+local anubisAutrePassif = pal({ species = "Anubis", gender = 1,
+                                ivs = { hp = 1, melee = 1, shot = 1, defense = 1 },
+                                passives = { "Unique" }, slot = 4 })
+check("dominates : un passif exclusif protege",
+      not (pf.dominates(anubis, anubisAutrePassif)))
+
+local jumeau = pal({ species = "Anubis", level = 40, gender = 1,
+                     ivs = { hp = 80, melee = 70, shot = 60, defense = 50 },
+                     passives = { "Legend", "Swift" }, slot = 7 })
+local _, egaux = pf.dominates(anubis, jumeau)
+check("dominates signale l'egalite parfaite", egaux == true)
+
+local domines = pf.findDominated({ anubis, anubisFaible, anubisFemelle, lamball })
+check("findDominated trouve le faible", #domines == 1 and domines[1].pal == anubisFaible)
+check("findDominated nomme le dominant", domines[1].by == anubis)
+
+-- Deux Pals identiques : un seul doit être signalé, sinon on relâcherait la paire.
+local paire = pf.findDominated({ anubis, jumeau })
+check("findDominated ne signale qu'un seul de deux identiques", #paire == 1, #paire)
+check("findDominated marque l'identite", paire[1].equal == true)
+
 -- ---------------------------------------------------------------- palio
 local palio = require("palio")
 

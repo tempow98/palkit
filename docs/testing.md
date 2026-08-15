@@ -11,7 +11,36 @@ renvoie les logs. Chaque étape est donc explicite jusqu'à la touche à presser
 > rassurant des runs précédents. C'est corrigé : il compte maintenant ce qu'il lit vraiment,
 > et deux nouvelles voies contournent la pagination. **Tu peux sauter les parties 1 et 2.**
 
-## Par quoi commencer — 6ᵉ passe
+## Par quoi commencer — 7ᵉ passe
+
+**M2 v0 est validé** (743 Pals, 0 coquille) et **l'affichage en Lua pur est prouvé**
+(`WBP_Ingame_Compass_C` en 800 × 122). La nouveauté à tester est **`F12` : la recherche**.
+
+| Priorité | Quoi | Ce qu'on cherche | Build Dev ? |
+|---|---|---|---|
+| 1 | **`F12`** | Quatre requêtes s'exécutent et un `palbox-recherche-<date>.json` sort | **Non** |
+| 2 | Éditer `settings.json`, `INS`, re-`F12` | Que tes propres requêtes marchent | **Non** |
+
+`F12` relit d'abord la Palbox (les ~8 s de parcours), puis exécute les requêtes. Attendu dans
+le log : quatre blocs `--- <nom> : N resultat(s) ---`, dont `doublons domines` qui doit
+lister une quinzaine de Pals avec, pour chacun, celui qui le surpasse et sa position
+`page/slot` — de quoi aller les condenser en jeu.
+
+Le moteur a déjà tourné sur ton export du run 6 : 14 dominés, 6 légendaires, 5 rares. **Si tu
+obtiens ces mêmes chiffres, c'est que tout concorde de bout en bout.**
+
+Pour écrire tes propres requêtes, la syntaxe est dans le README (section « M2 v1 »). Exemple
+à coller dans `settings.json` :
+
+```jsonc
+{ "name": "mes gros bras",
+  "criteria": { "ivMin": { "melee": 80 }, "levelMin": 50 },
+  "sort": [ { "field": "ivTotal", "desc": true } ], "limit": 10 }
+```
+
+---
+
+## 6ᵉ passe (faite)
 
 | Priorité | Quoi | Ce qu'on cherche | Build Dev ? |
 |---|---|---|---|
