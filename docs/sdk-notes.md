@@ -64,7 +64,10 @@ grep -rn "GetPalStorage" reference/PalworldModdingKit/Source/Pal/Public/
 | **UE4SS expose les `UFunction` comme des `userdata` appelables**, pas comme des `function` Lua | `type(obj.Methode) == "userdata"`, et pourtant `obj:Methode()` fonctionne. **Ne jamais filtrer sur `type(...) == "function"`** avant d'appeler : c'est le bug qui a fait échouer les runs 1 et 2. Tenter l'appel sous `pcall` est le seul test valable. | run 2, 2026-08-15 |
 | **Les valeurs de retour aussi sont des `userdata`** (FName, FText, enums) | Elles ne sont pas sérialisables telles quelles — un seul champ de ce type a fait perdre un export de 723 Pals déjà lus. Conversion, dans cet ordre : `ToString()` (FName/FString/FText), `get()` (RemoteUnrealParam), `GetValue()` (enums). Ce qui résiste aux trois est **écarté et nommé**, jamais transformé en `"userdata: 0x…"`. | run 3, 2026-08-15 |
 | Les **`UFUNCTION static`** sont appelables via leur CDO | `StaticFindObject("/Script/Pal.Default__PalUtility")` puis appel normal. Un `FGuid` passe en paramètre sans conversion. Ouvre `UPalUtility`, `UPalBreedingUtility` et la famille `UPalMasterDataTableAccess_*` — donc M4. | run 3, 2026-08-15 |
-| La conversion **`TArray` → table Lua résiste** | Ni `ForEach` ni l'accès indexé n'ont répondu sur `PassiveSkillList`. C'est le dernier verrou de M2 v1 : tout ce qui est liste (passifs, `EquipWaza`, `CraftSpeeds`) en dépend. Quatre API sont tentées, l'erreur de la première est conservée. | run 3, 2026-08-15 |
+| La conversion **`TArray` → table Lua** marche : **`ForEach`** | Les passifs sortent (`Legend`, `ElementBoost_Dark_2_PAL`…). L'échec du run 3 n'était pas la conversion mais l'objet : sur un slot non répliqué, le TArray n'a pas d'UObject propriétaire. Élément déballé par `:get()`. | run 4, 2026-08-15 |
+| **La réplication ne couvre que la page courante de la Palbox** | 30 slots sur 960 portent des données. Voir l'encadré M2. C'est le verrou majeur restant. | run 4, 2026-08-15 |
+| Un **slot occupé n'est pas un Pal lisible** | `IsEmpty()` répond `false` sur des slots dont aucun champ ne sort. Ne jamais compter les Pals sur l'occupation d'un slot : le champ témoin est l'espèce. | run 4, 2026-08-15 |
+| **`GetDesiredSize()` vaut 0×0 dans la frame de l'`AddToViewport`** | Slate n'a pas encore fait sa passe de layout. Au run 4, les cinq cibles — y compris la carte entière — rendaient `0×0`, ce qui n'avait aucun sens. Mesurer après un délai (`ExecuteWithDelay`, 500 ms). | run 4, 2026-08-15 |
 | Le logger PalKit **dédoublonne sur la chaîne de format** (fenêtre 60 s) | Un message paramétré émis pour dix méthodes différentes n'apparaît **qu'une fois**. Dans un diagnostic, utiliser `always(niveau, …)`, qui ne dédoublonne pas — sinon la cause racine reste invisible. | run 2, 2026-08-15 |
 | `ExecuteInGameThread` est **asynchrone** | Ce qui suit l'appel s'exécute *avant* le callback. Au run 2, le palier 4 du spike a conclu « aucun widget affiché » 8 ms avant que le widget soit créé. Tout ce qui dépend du résultat doit être enchaîné **dans** la continuation. | run 2, 2026-08-15 |
 | `ConsoleManagerSingleton` **introuvable** (2 valeurs candidates) | **Pas de console UE4SS** sur ce build : aucun repli par commande console, tout passe par le Lua. | `UE4SS.log` au démarrage |
@@ -252,6 +255,24 @@ Tout vient de `ModdingKit 62fad41` — `PalIndividualCharacterSaveParameter.h` e
 > ✅ **Chaîne validée en jeu au run 3** : 723 Pals lus sur 960 slots (237 vides, **0
 > illisible**), en une passe et sans ouvrir l'écran. Les statuts ci-dessous marqués ✅ ont été
 > effectivement lus ; la source est `run 3, 2026-08-15`.
+>
+> ⛔ **Mais seule la page courante porte des données (run 4).** L'export du run 4 contient
+> 727 entrées dont **30 seulement — exactement une page de 30 slots — ont des champs**. Les
+> 697 autres sont des coquilles : le slot existe, `IsEmpty()` répond `false`, et tout accès
+> aux données rend « *Tried calling a member function but the UObject instance is nullptr* ».
+>
+> **Cause : la réplication.** `UPalPlayerDataPalStorage` porte `SyncPageIndex` et
+> `bIsForceSyncAllSlot`, et `UPalIndividualCharacterSlot` ne réplique ses données que via
+> `ReplicateHandleID` / `ReplicateIndividualParameter` (`ReplicatedUsing=…`). Le client ne
+> reçoit donc que la page synchronisée — même en solo, où le jeu tourne malgré tout en
+> client/serveur local. Le résumé du run 3 (« 723 Pals ») était faux pour la même raison : il
+> comptait un Pal dès qu'un slot était occupé, sans vérifier qu'un champ en sortait.
+>
+> **Deux contournements en lecture seule** sont implémentés et attendent le run 5 :
+> `TargetContainer` (le conteneur complet, `Num()`/`Get(i)`) et `CachedNonEmptySlots_InServer`
+> (la liste tenue côté serveur — et en solo, le joueur *est* le serveur). Écrire
+> `SyncPageIndex` marcherait sans doute aussi, mais c'est une écriture : hors du read-only
+> strict, donc à trancher avec Lucas avant d'y toucher.
 
 | Champ | Statut | Propriété `SaveParameter` | Getter |
 |---|---|---|---|
@@ -260,7 +281,7 @@ Tout vient de `ModdingKit 62fad41` — `PalIndividualCharacterSaveParameter.h` e
 | Genre | 📘 | `Gender` (`EPalGenderType`) | `GetGenderType()` |
 | Niveau | ✅ | `Level` (uint8), `Exp` (int64) | `GetLevel()` ✅ **appelable** — les getters de `UPalIndividualCharacterParameter` sont donc exploitables, `GetWorkSuitabilityRanksWithCharacterRank()` en tête |
 | IVs | 📘 | `Talent_HP`, `Talent_Melee`, `Talent_Shot`, `Talent_Defense` (uint8) | — |
-| Passifs | ⬜ | `PassiveSkillList` (TArray\<FName\>) — **la conversion TArray résiste** : ni `ForEach` ni l'accès indexé n'ont répondu au run 3. Quatre API sont désormais tentées, avec l'erreur exacte de la première conservée | `GetPassiveSkillList()` |
+| Passifs | ✅ | `PassiveSkillList` (TArray\<FName\>) — lu **via `ForEach`**, élément déballé par `:get()`. Ex. `Legend`, `ElementBoost_Dark_2_PAL`, `PAL_Sanity_Up_2` | `GetPassiveSkillList()` — désormais tenté **avant** la propriété : le TArray d'un struct n'a pas toujours d'UObject propriétaire |
 | Compétences actives | 📘 | `EquipWaza`, `MasteredWaza` (TArray\<`EPalWazaID`\>) | — |
 | Aptitudes au travail | 📘 | `CraftSpeeds` (TArray\<`FPalWorkSuitabilityInfo`\>) | `GetWorkSuitabilityRanksWithCharacterRank()` ⬅️ **à préférer** |
 | Âme (soul upgrades) | 📘 | `Rank_HP`, `Rank_Attack`, `Rank_Defence`, `Rank_CraftSpeed` (uint8) | — |
@@ -443,3 +464,6 @@ sauvegarde, pas à nous.
 | 2026-08-15 (run 3) | Les **valeurs de retour** sont des `userdata` (FName, enums), pas seulement les fonctions | Un seul champ de ce type a fait perdre l'export complet de 723 Pals déjà lus. Cascade de conversion `ToString`/`get`/`GetValue` au point de lecture, **plus** un filet avant écriture : une valeur exotique ne doit jamais coûter le fichier entier |
 | 2026-08-15 (run 3) | Les **`UFUNCTION static` passent par le CDO** (`Default__PalUtility`), `FGuid` compris | Débloque `UPalUtility`, `UPalBreedingUtility` et les `UPalMasterDataTableAccess_*` : c'est la voie d'accès aux data tables, donc à M4 |
 | 2026-08-15 (run 3) | **La conversion `TArray` → Lua résiste** (`PassiveSkillList`) | Dernier verrou de M2 v1 : passifs, `EquipWaza`, `CraftSpeeds` en dépendent tous. 4 API tentées, erreur exacte conservée pour trancher au prochain run |
+| 2026-08-15 (run 4) | **L'export sort, et les `TArray` se lisent via `ForEach`** | Passifs confirmés. Le verrou du run 3 n'était pas la conversion mais l'objet sous-jacent |
+| 2026-08-15 (run 4) | **Seule la page courante est répliquée : 30 Pals réels sur 727 annoncés** | Le verrou majeur de M2. Le comptage était faux (un slot occupé ≠ un Pal lu), ce qui a masqué le problème deux runs de suite. Deux contournements en lecture seule implémentés : `TargetContainer` et `CachedNonEmptySlots_InServer` |
+| 2026-08-15 (run 4) | `GetDesiredSize()` mesuré dans la frame de l'ajout vaut toujours `0×0` | La mesure du spike était prise avant la passe de layout de Slate — verdict sans valeur sur les 5 cibles. Différée de 500 ms |

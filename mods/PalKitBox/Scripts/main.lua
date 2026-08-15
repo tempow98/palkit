@@ -69,10 +69,15 @@ local cfg = config.new({ modName = MOD_NAME, defaults = DEFAULTS, logger = logge
 --- Collecteur d'avertissements : un champ illisible est note une fois, pas a chaque Pal.
 -- `note` sert aux constats qui ne sont pas des echecs (quelle API a repondu, par exemple) :
 -- les melanger aux avertissements ferait passer un export sain pour un export degrade.
+-- `counts` compte les occurrences : sans lui, un échec sur 1 Pal et un échec sur 727 se
+-- ressemblent dans le log. Au run 4, seize champs étaient signalés comme illisibles alors
+-- que 30 Pals sortaient parfaitement -- la fréquence était la seule information qui
+-- distinguait « cas isolé » de « rien ne marche ».
 local function newWarnings()
-    local seen, list, notes = {}, {}, {}
+    local seen, list, notes, counts = {}, {}, {}, {}
     return {
         add = function(field, detail)
+            counts[field] = (counts[field] or 0) + 1
             if seen[field] then return end
             seen[field] = true
             list[#list + 1] = detail and (field .. " : " .. detail) or field
@@ -82,94 +87,19 @@ local function newWarnings()
             seen[message] = true
             notes[#notes + 1] = message
         end,
-        list  = list,
-        notes = notes,
+        list   = list,
+        notes  = notes,
+        counts = counts,
     }
 end
 
---- Convertit un TArray moteur en table Lua.
---
--- Quatre API sont tentees dans l'ordre : selon le build UE4SS et le type d'element, l'une
--- repond et les autres levent. Au run 3, les deux voies precedentes echouaient toutes les
--- deux sur `PassiveSkillList` et le mod se contentait de dire "TArray non convertible" --
--- un constat sans piste. Chaque voie porte donc son nom, et l'erreur exacte de la premiere
--- est conservee : c'est elle qui dira quoi corriger si les quatre echouent.
--- @return table|nil liste, string|nil voie utilisee, string|nil detail de l'echec
-local function toList(arr)
-    if arr == nil then return nil, nil, "champ absent" end
+-- `query.toList` et `query.scalar` vivent dans shared/query.lua : tout mod qui lit des
+-- donnees du jeu en a besoin, et les y placer les rend testables hors jeu pour de vrai.
+local toList = query.toList
 
-    -- Deballe un element : les TArray rendent souvent un wrapper RemoteUnrealParam.
-    local function unwrap(element)
-        local gotOk, got = pcall(function() return element:get() end)
-        return query.str(gotOk and got or element)
-    end
 
-    local firstError = nil
-    local function attempt(name, fn)
-        local out = {}
-        local ok, err = pcall(fn, out)
-        if ok and #out > 0 then return out, name end
-        if not ok and firstError == nil then
-            firstError = string.format("%s : %s", name, tostring(err))
-        end
-        -- Une liste vide est un resultat legitime (un Pal sans passif) : on la retient
-        -- si l'appel n'a pas leve, mais on laisse les voies suivantes tenter mieux.
-        if ok then return out, name end
-        return nil
-    end
+local scalar = query.scalar
 
-    local out, via = attempt("ForEach", function(out)
-        arr:ForEach(function(_, element) out[#out + 1] = unwrap(element) end)
-    end)
-    if out then return out, via end
-
-    out, via = attempt("GetArrayNum/GetArrayElement", function(out)
-        for i = 0, arr:GetArrayNum() - 1 do out[#out + 1] = unwrap(arr:GetArrayElement(i)) end
-    end)
-    if out then return out, via end
-
-    out, via = attempt("GetArrayNum/index", function(out)
-        for i = 1, arr:GetArrayNum() do out[#out + 1] = unwrap(arr[i]) end
-    end)
-    if out then return out, via end
-
-    out, via = attempt("#/index", function(out)
-        for i = 1, #arr do out[#out + 1] = unwrap(arr[i]) end
-    end)
-    if out then return out, via end
-
-    return nil, nil, firstError or "aucune des 4 API TArray n'a repondu"
-end
-
---- Reduit une valeur moteur a un scalaire encodable en JSON.
---
--- Necessaire parce que le moteur ne rend pas que des nombres : un FName, un FText ou un
--- enum arrivent en `userdata`, et le codec JSON -- qui a raison de ne rien deviner --
--- refuse de les serialiser. Au run 3, 723 Pals avaient ete lus correctement et l'export
--- entier a ete perdu sur un seul champ de ce genre.
---
--- Trois conversions sont tentees, dans l'ordre ou UE4SS les expose : `ToString()` (FName,
--- FString, FText), `get()` (RemoteUnrealParam), `GetValue()` (enums). Ce qui resiste aux
--- trois est **abandonne et signale**, jamais converti en "userdata: 0x…" : une valeur
--- illisible doit se voir dans le rapport, pas s'y deguiser en donnee.
--- @return number|string|boolean|nil, string|nil  valeur, methode utilisee
-local function scalar(value)
-    local t = type(value)
-    if value == nil or t == "number" or t == "string" or t == "boolean" then
-        return value, nil
-    end
-
-    for _, method in ipairs({ "ToString", "get", "GetValue" }) do
-        local ok, converted = pcall(function() return value[method](value) end)
-        if ok then
-            local ct = type(converted)
-            if ct == "number" or ct == "string" or ct == "boolean" then
-                return converted, method
-            end
-        end
-    end
-    return nil, nil
-end
 
 --- Lit un champ de FPalIndividualCharacterSaveParameter, en notant l'echec eventuel.
 local function readField(saveParam, field, warnings)
@@ -225,7 +155,20 @@ local function readPal(param, warnings)
         craftSpeed = readField(saveParam, "Rank_CraftSpeed", warnings),
     }
 
-    local passives, via, detail = toList(safe.get(saveParam, "PassiveSkillList"))
+    -- Le getter d'abord, la propriété du struct ensuite. Un TArray lu sur un struct n'a pas
+    -- toujours d'UObject propriétaire -- c'est ce que disait l'erreur du run 4, « Tried
+    -- calling a member function but the UObject instance is nullptr » -- alors que le
+    -- retour d'une UFUNCTION est un vrai wrapper.
+    local passives, via, detail = toList(query.call(param, "GetPassiveSkillList"))
+    if passives == nil or #passives == 0 then
+        local fallback, viaProp, detailProp = toList(safe.get(saveParam, "PassiveSkillList"))
+        if fallback ~= nil then
+            passives, via, detail = fallback, (viaProp and viaProp .. " (propriete)"), detailProp
+        end
+    elseif via then
+        via = via .. " (getter)"
+    end
+
     if passives == nil then
         warnings.add("PassiveSkillList", "TArray non convertible -- " .. tostring(detail))
     else
@@ -252,6 +195,76 @@ end
 
 --- Parcourt toutes les pages et renvoie le rapport complet.
 -- @return table|nil rapport
+--- Rassemble les slots de la Palbox depuis TOUTES les sources connues, dédoublonnés.
+--
+-- Pourquoi ne pas se contenter de la pagination : au run 4, `GetSlot(page, slot)` a rendu
+-- 960 slots dont **une seule page** portait des données. Les 697 autres slots occupés
+-- étaient des coquilles — le jeu ne réplique côté client que la page synchronisée
+-- (`SyncPageIndex` / `bIsForceSyncAllSlot` dans `UPalPlayerDataPalStorage`).
+--
+-- Les deux premières sources contournent la pagination sans rien écrire :
+--   * `TargetContainer` est le conteneur complet (`Num()`, `Get(i)`) ;
+--   * `CachedNonEmptySlots_InServer` est la liste tenue côté serveur — et en solo, le
+--     joueur *est* le serveur.
+-- L'union dédoublonnée par nom d'objet garantit qu'on ne rate rien et qu'on ne compte
+-- rien deux fois.
+-- @return table liste de { slot, page, index, source }
+local function gatherSlots(storage, pageNum, slotNum, warnings)
+    local slots, seen = {}, {}
+
+    local function keep(slot, page, index, source)
+        if not safe.isValid(slot) then return false end
+        local id = query.nameOf(slot)
+        if seen[id] then return false end
+        seen[id] = true
+        slots[#slots + 1] = { slot = slot, page = page, index = index, source = source }
+        return true
+    end
+
+    -- Source 1 : le conteneur complet.
+    local container = safe.get(storage, "TargetContainer")
+    if safe.isValid(container) then
+        local total = query.callWhy(logger, container, "Num")
+        if type(total) == "number" and total > 0 then
+            local added = 0
+            for i = 0, total - 1 do
+                local slot = query.call(container, "Get", i)
+                -- Les indices du conteneur sont continus : page et rang s'en déduisent.
+                if keep(slot, math.floor(i / slotNum), i % slotNum, "container") then
+                    added = added + 1
+                end
+            end
+            warnings.note(string.format("TargetContainer : %d slots sur %d annonces",
+                added, total))
+        end
+    end
+
+    -- Source 2 : le cache serveur. `keepObjects` : ce sont des slots, pas des noms.
+    local cached, viaCache = toList(safe.get(storage, "CachedNonEmptySlots_InServer"), true)
+    if cached ~= nil and #cached > 0 then
+        local added = 0
+        for _, slot in ipairs(cached) do
+            -- Ces slots portent leur propre position : on la lit plutôt que de la deviner.
+            local index = safe.get(slot, "SlotIndex")
+            index = type(index) == "number" and index or 0
+            if keep(slot, math.floor(index / slotNum), index % slotNum, "cache serveur") then
+                added = added + 1
+            end
+        end
+        warnings.note(string.format("CachedNonEmptySlots_InServer : %d entrees, %d nouvelles "
+            .. "(via %s)", #cached, added, tostring(viaCache)))
+    end
+
+    -- Source 3 : la pagination, qui reste la référence pour les positions.
+    for page = 0, pageNum - 1 do
+        for index = 0, slotNum - 1 do
+            keep(query.call(storage, "GetSlot", page, index), page, index, "pagination")
+        end
+    end
+
+    return slots
+end
+
 local function collect()
     local storage, route = query.palStorage(logger)
     if storage == nil then
@@ -298,13 +311,11 @@ local function collect()
         pals = {},
     }
 
-    local empty, unreadable = 0, 0
+    local empty, unreadable, partial = 0, 0, 0
 
-    -- Indices a base 0 cote moteur : GetSlot(pageIndex, slotIndex) suit la convention C++.
-    for page = 0, pageNum - 1 do
-        for slotIndex = 0, slotNum - 1 do
-            local slot = query.call(storage, "GetSlot", page, slotIndex)
-
+    for _, entry in ipairs(gatherSlots(storage, pageNum, slotNum, warnings)) do
+        local slot, page, slotIndex = entry.slot, entry.page, entry.index
+        do
             if slot == nil or not safe.isValid(slot) then
                 unreadable = unreadable + 1
             elseif query.call(slot, "IsEmpty") == true then
@@ -321,8 +332,16 @@ local function collect()
                     if pal then
                         pal.page   = page
                         pal.slot   = slotIndex
+                        pal.source = entry.source
                         pal.locked = query.call(slot, "IsLocked") == true
                         report.pals[#report.pals + 1] = pal
+
+                        -- Un Pal sans espece n'est pas un Pal lu : c'est une coquille.
+                        -- Le run 4 en a produit 697 sur 727 et les a comptes comme lus,
+                        -- ce qui a masque le vrai probleme (voir plus bas) derriere un
+                        -- resume rassurant. L'espece est le champ temoin : s'il manque,
+                        -- rien d'utile n'a ete lu.
+                        if pal.species == nil then partial = partial + 1 end
                     else
                         unreadable = unreadable + 1
                     end
@@ -331,20 +350,51 @@ local function collect()
         end
     end
 
-    report.meta.palCount        = #report.pals
-    report.meta.emptySlots      = empty
-    report.meta.unreadableSlots = unreadable
-    report.warnings             = warnings.list
-    report.notes                = warnings.notes
+    report.meta.slotsOccupied    = #report.pals
+    report.meta.palCount         = #report.pals - partial
+    report.meta.partialPals      = partial
+    report.meta.emptySlots       = empty
+    report.meta.unreadableSlots  = unreadable
+    report.warnings              = warnings.list
+    report.notes                 = warnings.notes
+    report.fieldFailures         = warnings.counts
 
     return report
 end
 
 --- Resume lisible dans UE4SS.log.
 local function logSummary(report)
-    logger.always("INFO", "Palbox : %d Pals, %d slots vides, %d slots illisibles (%d pages x %d)",
-        report.meta.palCount, report.meta.emptySlots, report.meta.unreadableSlots,
-        report.meta.pageCount, report.meta.slotsPerPage)
+    logger.always("INFO", "Palbox : %d Pals lus, %d coquilles vides, %d slots libres, "
+        .. "%d slots illisibles (%d pages x %d)",
+        report.meta.palCount, report.meta.partialPals, report.meta.emptySlots,
+        report.meta.unreadableSlots, report.meta.pageCount, report.meta.slotsPerPage)
+
+    -- Le diagnostic qui manquait au run 4 : un slot occupé dont aucun champ ne sort n'est
+    -- pas un Pal, et la répartition par page dit *pourquoi*.
+    if report.meta.partialPals > 0 then
+        local pagesOk = {}
+        for _, pal in ipairs(report.pals) do
+            if pal.species ~= nil then pagesOk[pal.page] = (pagesOk[pal.page] or 0) + 1 end
+        end
+        local pageList, count = {}, 0
+        for page in pairs(pagesOk) do
+            count = count + 1
+            pageList[#pageList + 1] = page
+        end
+        table.sort(pageList)
+
+        logger.always("WARN", "%d slots occupes n'ont rendu AUCUN champ (%.0f %%).",
+            report.meta.partialPals,
+            100 * report.meta.partialPals / math.max(1, report.meta.slotsOccupied))
+        logger.always("WARN", "Pages reellement lisibles : %d sur %d%s",
+            count, report.meta.pageCount,
+            count > 0 and (" (" .. table.concat(pageList, ", ", 1, math.min(#pageList, 8)) .. ")") or "")
+        if count <= 1 then
+            logger.always("WARN", "Une seule page repond : le jeu ne REPLIQUE que la page "
+                .. "synchronisee (SyncPageIndex). Les autres slots existent mais leurs "
+                .. "donnees ne sont pas cote client.")
+        end
+    end
 
     -- Trois exemples suffisent a juger si la lecture est correcte, sans noyer le log.
     for i = 1, math.min(3, #report.pals) do
@@ -355,10 +405,14 @@ local function logSummary(report)
     end
 
     if #report.warnings > 0 then
-        logger.always("WARN", "%d champ(s) illisible(s) -- a reporter dans docs/sdk-notes.md :",
-            #report.warnings)
+        logger.always("WARN", "%d champ(s) illisible(s) -- a reporter dans docs/sdk-notes.md "
+            .. "(entre parentheses : sur combien de Pals) :", #report.warnings)
         for _, w in ipairs(report.warnings) do
-            logger.always("WARN", "  - %s", w)
+            -- La fréquence sépare le cas isolé du blocage général : sans elle, les deux
+            -- s'affichent à l'identique.
+            local field = string.match(w, "^([^ :]+)")
+            local n = field and report.fieldFailures[field]
+            logger.always("WARN", "  - %s%s", w, n and string.format("  (x%d)", n) or "")
         end
     elseif report.meta.palCount == 0 then
         -- Le faux vert du 2e run : "aucun champ illisible" sur zero Pal lu. La liste des

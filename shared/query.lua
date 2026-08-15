@@ -141,6 +141,102 @@ function query.str(value)
     return tostring(value)
 end
 
+-- ------------------------------------------------------------------ valeurs moteur
+
+--- Reduit une valeur moteur a un scalaire encodable en JSON.
+--
+-- Le moteur ne rend pas que des nombres : un FName, un FText ou un enum arrivent en
+-- `userdata`. Trois conversions sont tentees, dans l'ordre ou UE4SS les expose :
+-- `ToString()` (FName/FString/FText), `get()` (RemoteUnrealParam), `GetValue()` (enums).
+-- Ce qui resiste aux trois est **abandonne**, jamais converti en "userdata: 0x…" : une
+-- valeur illisible doit se voir, pas se deguiser en donnee.
+-- @return number|string|boolean|nil valeur, string|nil methode utilisee
+function query.scalar(value)
+    local t = type(value)
+    if value == nil or t == "number" or t == "string" or t == "boolean" then
+        return value, nil
+    end
+
+    for _, method in ipairs({ "ToString", "get", "GetValue" }) do
+        local ok, converted = pcall(function() return value[method](value) end)
+        if ok then
+            local ct = type(converted)
+            if ct == "number" or ct == "string" or ct == "boolean" then
+                return converted, method
+            end
+        end
+    end
+    return nil, nil
+end
+
+--- Convertit un TArray moteur en table Lua.
+--
+-- Quatre API sont tentees dans l'ordre : selon le build UE4SS et le type d'element, l'une
+-- repond et les autres levent. L'erreur exacte de la premiere est conservee -- c'est elle
+-- qui dira quoi corriger si les quatre echouent.
+-- @param keepObjects boolean  garde les UObject tels quels au lieu de les reduire en chaine
+--                             (une liste de slots n'est pas une liste de noms)
+-- @return table|nil liste, string|nil voie utilisee, string|nil detail de l'echec
+function query.toList(arr, keepObjects)
+    if arr == nil then return nil, nil, "champ absent" end
+
+    local function unwrap(element)
+        local gotOk, got = pcall(function() return element:get() end)
+        local value = gotOk and got or element
+        if keepObjects then return value end
+        return query.str(value)
+    end
+
+    local firstError, emptyOut, emptyVia = nil, nil, nil
+
+    -- Une voie qui ne leve pas mais ne rend rien n'est pas retenue tout de suite : une
+    -- liste vide est un resultat legitime (un Pal sans passif), mais elle ne doit pas
+    -- l'emporter sur une voie suivante qui, elle, rend des donnees. On la garde de cote
+    -- et on ne s'en contente qu'a defaut de mieux.
+    local function attempt(name, fn, weak)
+        local out = {}
+        local ok, err = pcall(fn, out)
+        if ok then
+            if #out > 0 then return out, name end
+            -- `weak` : `#arr` vaut 0 aussi bien sur un tableau vide que sur un objet qui
+            -- n'est pas un tableau du tout. Un objet qui a deja refuse ForEach ET
+            -- GetArrayNum n'est pas un TArray vide : c'est un objet mort, et le dire
+            -- vaut mieux que de rendre une liste vide qui passera pour une donnee.
+            if weak and firstError ~= nil then return nil end
+            if emptyOut == nil then emptyOut, emptyVia = out, name end
+            return nil
+        end
+        if firstError == nil then
+            firstError = string.format("%s : %s", name, tostring(err))
+        end
+        return nil
+    end
+
+    local out, via = attempt("ForEach", function(acc)
+        arr:ForEach(function(_, element) acc[#acc + 1] = unwrap(element) end)
+    end)
+    if out then return out, via end
+
+    out, via = attempt("GetArrayNum/GetArrayElement", function(acc)
+        for i = 0, arr:GetArrayNum() - 1 do acc[#acc + 1] = unwrap(arr:GetArrayElement(i)) end
+    end)
+    if out then return out, via end
+
+    out, via = attempt("GetArrayNum/index", function(acc)
+        for i = 1, arr:GetArrayNum() do acc[#acc + 1] = unwrap(arr[i]) end
+    end)
+    if out then return out, via end
+
+    out, via = attempt("#/index", function(acc)
+        for i = 1, #arr do acc[#acc + 1] = unwrap(arr[i]) end
+    end, true)
+    if out then return out, via end
+
+    if emptyOut ~= nil then return emptyOut, emptyVia .. " (liste vide)" end
+
+    return nil, nil, firstError or "aucune des 4 API TArray n'a repondu"
+end
+
 -- ------------------------------------------------------------------ recherche globale
 
 --- FindFirstOf sous garde. A n'utiliser QUE hors boucle (voir regle 2).

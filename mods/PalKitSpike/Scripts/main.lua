@@ -370,7 +370,19 @@ local function stage3_instantiate(ctx, onDone)
 
     local dispatched = safe.gameThread(logger, "stage3", function()
         safe.call(logger, "palier 3", attempt)
-        onDone()
+
+        -- Laisser passer quelques frames avant de mesurer. Slate ne calcule la taille
+        -- desiree qu'a sa passe de layout : au run 4, les cinq cibles rendaient
+        -- `DesiredSize 0x0` mesure dans la frame meme de l'AddToViewport -- y compris la
+        -- carte entiere, ce qui n'a aucun sens. La mesure etait juste prise trop tot.
+        local delayed = pcall(ExecuteWithDelay, 500, function()
+            safe.call(logger, "palier 4 differe", onDone)
+        end)
+        if not delayed then
+            logger.always("WARN", "ExecuteWithDelay indisponible : mesures prises "
+                .. "immediatement, DesiredSize sera probablement nul a tort.")
+            onDone()
+        end
     end)
 
     -- Si le dispatch lui-meme a echoue, le callback ne viendra jamais : la suite doit
@@ -412,11 +424,15 @@ local function stage4_sideEffects(ctx)
     if size ~= nil then
         local okDims, x, y = pcall(function() return size.X, size.Y end)
         if okDims then
-            logger.always("INFO", "DesiredSize       : %sx%s", tostring(x), tostring(y))
+            logger.always("INFO", "DesiredSize       : %sx%s (mesure 500 ms apres l'ajout)",
+                tostring(x), tostring(y))
             if (tonumber(x) or 0) == 0 or (tonumber(y) or 0) == 0 then
-                logger.always("WARN", "Taille nulle : le widget est attache mais n'occupe "
-                    .. "aucune place. Attendu pour une icone sans donnees -- c'est le "
-                    .. "moment d'essayer la cible suivante.")
+                logger.always("WARN", "Taille nulle apres layout : le widget est attache "
+                    .. "mais n'occupe aucune place. Pour une icone sans donnees c'est "
+                    .. "normal ; pour un ecran entier, c'est qu'il attend une "
+                    .. "initialisation que Create() ne fait pas.")
+            else
+                logger.always("INFO", ">>> Ce widget occupe une place reelle a l'ecran. <<<")
             end
         end
     end

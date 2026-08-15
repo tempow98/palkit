@@ -3,29 +3,35 @@
 Ce document s'adresse à Lucas, qui est le **runtime** du projet : il installe, lance, teste et
 renvoie les logs. Chaque étape est donc explicite jusqu'à la touche à presser.
 
-> **État au 2026-08-15, après ton 3ᵉ run — la lecture de la Palbox marche.** 960 slots
-> parcourus, **723 Pals lus, 0 illisible**. Les quatre voies d'accès répondent. Le spike
-> instancie un widget et l'attache au viewport sans perturber le jeu. Il restait un défaut :
-> l'export JSON était perdu sur un seul champ exotique (un `userdata` que le codec refuse) —
-> corrigé, et doublé d'un filet pour que ça ne puisse plus coûter le fichier entier.
-> **Tu peux sauter les parties 1 et 2.**
+> **État au 2026-08-15, après ton 4ᵉ run — l'export sort, mais il n'est pas complet.** Le JSON
+> est écrit, avec espèce, IVs, rang, âmes et **passifs**. En l'analysant, un problème est
+> apparu que les résumés précédents masquaient : sur 727 entrées, **30 seulement portent des
+> données** — exactement une page. Le jeu ne réplique côté client que la page synchronisée,
+> même en solo. Le mod comptait un Pal dès qu'un slot était *occupé*, d'où le « 723 Pals »
+> rassurant des runs précédents. C'est corrigé : il compte maintenant ce qu'il lit vraiment,
+> et deux nouvelles voies contournent la pagination. **Tu peux sauter les parties 1 et 2.**
 
-## Par quoi commencer — 4ᵉ passe
+## Par quoi commencer — 5ᵉ passe
 
 | Priorité | Quoi | Ce qu'on cherche | Build Dev ? |
 |---|---|---|---|
-| 1 | **`F7`** dans `PalKitBox` | **Le fichier JSON doit sortir cette fois.** C'est le livrable de M2 v0 | **Non** |
-| 2 | **`F5`** (spike), **quatre fois**, avec `F6` entre chaque | Chaque `F5` essaie une cible différente. On cherche celle qui se **voit** | Oui |
-| 3 | `F11` seulement si `F7` échoue | Le diagnostic voie par voie | **Non** |
+| 1 | **`F8`** (résumé, sans fichier) | La ligne `Palbox : N Pals lus, M coquilles vides`. Si `M` tombe à ~0, le verrou de la réplication est levé | **Non** |
+| 2 | **`F7`** si `F8` est bon | Le JSON complet — le vrai livrable de M2 v0 | **Non** |
+| 3 | **`F5`** ×2, avec `F6` entre | La ligne `DesiredSize`, **mesurée 500 ms après l'ajout** cette fois | Oui |
 
-**Ce que j'attends de ce run**, dans l'ordre d'importance :
+**Ce que j'attends de ce run**, dans l'ordre :
 
-1. **Le fichier `palbox-export-*.json`** (à côté du mod). C'est le vrai livrable : 723 Pals
-   avec espèce, niveau, IVs, rang, âmes.
-2. La ligne `PassiveSkillList` du log : elle dira **laquelle des quatre API `TArray`** répond.
-   C'est le dernier verrou de M2 v1 — passifs, compétences et aptitudes en dépendent tous.
-3. Pour le spike : à chaque `F5`, la ligne `DesiredSize`. Si elle affiche `0x0`, le widget est
-   attaché mais n'occupe aucune place — inutile de scruter l'écran, passe à la cible suivante.
+1. **La ligne de résumé de `F8`.** Trois cas :
+   - `N Pals lus, 0 coquille` → le verrou est levé, `F7` et on passe à M2 v1 ;
+   - `N ≈ 30, ~697 coquilles` → les deux contournements ne suffisent pas ; il faudra
+     discuter d'écrire `SyncPageIndex`, ce qui sort du read-only strict — je ne le ferai
+     pas sans ton accord ;
+   - un nombre intermédiaire → dis-moi lequel, la répartition par page est dans le log.
+2. **Le JSON** si `F7` tourne (dépose-le à côté du log comme la dernière fois, c'est
+   parfait — je l'analyse directement).
+3. Pour le spike : la ligne `DesiredSize` **n'est plus mesurée dans la même frame**. Si un
+   widget affiche autre chose que `0.0x0.0`, c'est lui qui occupe une vraie place à l'écran —
+   et c'est la réponse à la question de M1.
 
 ⚠️ **La sonde est sur `F11`**, pas F9 : ton `PalKitDump` occupe F9 (dump d'objets) et F10
 (acteurs), et presser F9 déclenchait un dump de 127 Mo **avant** la sonde.

@@ -236,26 +236,70 @@ local asParam  = { get      = function() return 65 end }
 local asEnum   = { GetValue = function() return 2 end }
 local opaque   = { Autre    = function() return {} end }
 
-local function scalarOf(value)
-    -- Reproduit la cascade de PalKitBox.scalar : meme ordre, memes methodes.
-    local t = type(value)
-    if value == nil or t == "number" or t == "string" or t == "boolean" then return value end
-    for _, method in ipairs({ "ToString", "get", "GetValue" }) do
-        local ok, converted = pcall(function() return value[method](value) end)
-        if ok then
-            local ct = type(converted)
-            if ct == "number" or ct == "string" or ct == "boolean" then return converted end
-        end
-    end
-    return nil
-end
+-- On teste le VRAI query.scalar, pas une copie de sa logique : c'est la raison pour
+-- laquelle il vit dans shared/ et non dans le mod.
+local scalarOf = query.scalar
 
 check("scalar convertit un FName", scalarOf(asFName) == "BOSS_IceHorse_Dark")
 check("scalar convertit un RemoteUnrealParam", scalarOf(asParam) == 65)
 check("scalar convertit un enum", scalarOf(asEnum) == 2)
 check("scalar laisse passer les scalaires", scalarOf(65) == 65 and scalarOf("x") == "x")
 check("scalar abandonne l'irreductible plutot que de le deguiser", scalarOf(opaque) == nil)
+check("scalar nomme la methode utilisee", select(2, scalarOf(asEnum)) == "GetValue")
 check("un scalaire converti est encodable", encodable(scalarOf(asFName)))
+
+-- toList : quatre API tentées, l'erreur de la première conservée.
+local viaForEach = {
+    ForEach = function(self, fn)
+        for i, v in ipairs({ "Legend", "Swift" }) do fn(i, { get = function() return v end }) end
+    end,
+}
+local list, via = query.toList(viaForEach)
+check("toList lit un TArray via ForEach", list and #list == 2 and list[1] == "Legend", via)
+check("toList nomme la voie utilisee", via == "ForEach", via)
+
+local viaIndex = {
+    GetArrayNum     = function() return 2 end,
+    GetArrayElement = function(_, i) return "skill" .. i end,
+}
+local list2, via2 = query.toList(viaIndex)
+check("toList retombe sur GetArrayElement quand ForEach leve",
+      list2 and #list2 == 2 and list2[1] == "skill0", tostring(via2))
+
+-- Un TArray dont l'UObject est mort : toutes les voies lèvent, y compris `#` (côté jeu
+-- c'est un userdata sans __len). C'est le cas rencontré au run 4 sur les pages non
+-- répliquées de la Palbox.
+local mort = setmetatable({}, {
+    __index = function() error("Tried calling a member function but the UObject instance is nullptr") end,
+    __len   = function() error("UObject instance is nullptr") end,
+})
+local list3, _, detail = query.toList(mort)
+check("toList rend nil et l'erreur exacte quand tout echoue",
+      list3 == nil and detail and detail:find("nullptr", 1, true) ~= nil, tostring(detail))
+check("toList sur nil est signale", select(3, query.toList(nil)) == "champ absent")
+
+-- Une liste vide est légitime, mais elle ne doit pas l'emporter sur une voie qui rend des
+-- données : sinon un Pal avec passifs sortirait sans passifs.
+local videPuisPleine = {
+    ForEach         = function() end, -- ne leve pas, ne remplit rien
+    GetArrayNum     = function() return 1 end,
+    GetArrayElement = function() return "Legend" end,
+}
+local list4, via4 = query.toList(videPuisPleine)
+check("toList prefere une voie qui rend des donnees a une voie vide",
+      list4 and #list4 == 1 and list4[1] == "Legend", tostring(via4))
+
+local toujoursVide = { ForEach = function() end }
+local list5, via5 = query.toList(toujoursVide)
+check("toList accepte une liste vide a defaut de mieux, en le disant",
+      list5 and #list5 == 0 and via5 and via5:find("vide", 1, true) ~= nil, tostring(via5))
+
+-- keepObjects : une liste de slots n'est pas une liste de noms.
+local slot = { IsValid = function() return true end }
+local objets = query.toList({
+    ForEach = function(_, fn) fn(1, { get = function() return slot end }) end,
+}, true)
+check("toList garde les UObject quand on le demande", objets and objets[1] == slot)
 
 -- ---------------------------------------------------------------- palio
 local palio = require("palio")

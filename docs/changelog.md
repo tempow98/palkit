@@ -4,6 +4,44 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
 
 ## [Non publié]
 
+### Corrigé — 2026-08-15 (run 4) — L'export sort, et il révèle que le comptage mentait
+
+**Le JSON est écrit** : 727 entrées, avec espèce, genre, IVs, âmes, rang et **passifs**
+(`Legend`, `ElementBoost_Dark_2_PAL`…). Les `TArray` se lisent via `ForEach` + `:get()`.
+
+**Mais l'analyse du fichier contredit le résumé.** Sur 727 entrées, **30 seulement portent des
+champs** — exactement une page de 30 slots. Les 697 autres sont des coquilles : le slot
+existe, `IsEmpty()` répond `false`, et tout accès rend « *the UObject instance is nullptr* ».
+Cause : **le jeu ne réplique que la page synchronisée** (`SyncPageIndex`,
+`bIsForceSyncAllSlot`, et les propriétés `ReplicatedUsing` du slot). Même en solo.
+
+Ce problème existait dès le run 3 et le résumé le cachait : il comptait un Pal dès qu'un slot
+était **occupé**, sans vérifier qu'un champ en sortait. « 723 Pals, 0 illisible » était faux.
+
+- `mods/PalKitBox` — comptage honnête : `palCount` ne compte que les Pals dont l'**espèce**
+  est lue ; les autres deviennent `partialPals`. Le résumé affiche la répartition par page et
+  nomme la cause quand une seule page répond
+- `mods/PalKitBox` — `gatherSlots` : union dédoublonnée de **trois** sources, dont deux qui
+  contournent la pagination sans rien écrire — `TargetContainer` (le conteneur complet,
+  `Num()`/`Get(i)`) et `CachedNonEmptySlots_InServer` (la liste côté serveur, et en solo le
+  joueur *est* le serveur)
+- `mods/PalKitBox` — les passifs passent par `GetPassiveSkillList()` **avant** la propriété du
+  struct : le TArray d'un struct n'a pas toujours d'UObject propriétaire
+- `mods/PalKitBox` — les avertissements portent leur **fréquence** (`x697`). Sans elle, un
+  échec sur un Pal et un échec sur tous s'affichent à l'identique — c'est ce qui a fait passer
+  le blocage pour un détail
+- `shared/query.lua` — `scalar` et `toList` remontent dans la lib commune : tout mod qui lit
+  des données du jeu en a besoin, et **les tests portent désormais sur le vrai code** au lieu
+  d'une copie de sa logique
+- `shared/query.lua` — `toList` ne retient plus une liste vide au détriment d'une voie qui rend
+  des données, et un objet qui refuse `ForEach` **et** `GetArrayNum` n'est plus déclaré
+  « tableau vide » sur la foi d'un `#` à zéro : c'est un objet mort, et le dire vaut mieux
+- `mods/PalKitSpike` — les mesures d'affichage sont différées de 500 ms. Slate ne calcule la
+  taille désirée qu'à sa passe de layout : au run 4, les cinq cibles rendaient `0×0` — y
+  compris la carte entière, ce qui n'avait aucun sens
+- `scripts/test-shared.lua` — 88 tests (9 de plus) sur les quatre API `TArray`, la préférence
+  aux données non vides et la conservation de l'erreur d'origine
+
 ### Corrigé — 2026-08-15 (run 3) — M2 v0 lit la Palbox : 723 Pals, 0 slot illisible
 
 **La chaîne de lecture tient.** Les quatre voies d'accès répondent et convergent sur la même
