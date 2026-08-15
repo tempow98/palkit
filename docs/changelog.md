@@ -4,6 +4,31 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
 
 ## [Non publié]
 
+### Ajouté — 2026-08-15 (run 5) — Parcours synchronisé des pages de la Palbox
+
+Le comptage honnête a confirmé le diagnostic : **30 Pals lus, 697 coquilles, 1 page sur 32**.
+Et il a écarté une hypothèse — `TargetContainer` rend **960 slots sur 960**, donc l'*accès*
+n'a jamais été en cause. C'est bien la **réplication** : le client ne reçoit que la page
+synchronisée. `CachedNonEmptySlots_InServer` est vide côté client.
+
+Le jeu expose la solution : **`APalPlayerState::RequestPalBoxSyncPage_ToServer(pageIndex)`**
+(`UFUNCTION(BlueprintCallable, Reliable, Server)`), la fonction que l'écran Palbox appelle
+lui-même quand le joueur tourne les pages.
+
+- `mods/PalKitBox` — la collecte devient une passe asynchrone : demande de synchronisation,
+  attente de la réponse (250 ms), lecture de la page, page suivante. ~8 s pour 32 pages. La
+  page d'origine est **restaurée** en fin de parcours
+- `mods/PalKitBox` — `syncPages` / `syncDelayMs` dans `settings.json` : `syncPages = false`
+  rend au mod un comportement strictement passif, au prix d'un export limité à la page
+  courante
+- `mods/PalKitBox` — le cartouche du fichier ne prétend plus que le mod « ne modifie rien » :
+  il ne modifie **aucune donnée**, mais il change un état de synchronisation, et c'est écrit
+  noir sur blanc avec la raison
+
+**Ce choix sort du read-only strict du brief §3.2** — non parce qu'une donnée serait modifiée
+(aucune sauvegarde n'est touchée : on demande l'envoi de données déjà existantes), mais parce
+qu'un état de synchronisation change. Arbitré avec Lucas avant implémentation.
+
 ### Corrigé — 2026-08-15 (run 4) — L'export sort, et il révèle que le comptage mentait
 
 **Le JSON est écrit** : 727 entrées, avec espèce, genre, IVs, âmes, rang et **passifs**

@@ -19,9 +19,18 @@
     ------------------------------------------------------------------------------------
     F7  -> parcourt toutes les pages, ecrit un JSON a cote du mod, resume dans le log.
     F8  -> meme parcours, resume dans le log seulement (aucun fichier ecrit).
+    F11 -> sonde : essaie les 4 voies d'acces a la Palbox et dit laquelle repond.
 
-    Il ne modifie RIEN. Aucun hook, aucun setter, aucune ecriture dans le jeu : un export
-    rate ne peut pas abimer une sauvegarde.
+    Il ne modifie AUCUNE DONNEE : pas un setter, pas un hook, pas une ecriture de
+    sauvegarde. Un export rate ne peut pas abimer une partie.
+
+    Une nuance, ajoutee au run 5 et arbitree avec Lucas : le mod appelle
+    `RequestPalBoxSyncPage_ToServer` page par page. C'est la fonction que l'ecran Palbox
+    utilise lui-meme quand le joueur tourne les pages, et elle ne fait que *demander
+    l'envoi* de donnees qui existent deja cote serveur. Sans elle, l'export ne contient
+    qu'une page sur 32 : le jeu ne replique que la page synchronisee (run 4 : 30 Pals lus
+    sur 727 slots occupes). L'etat de synchronisation est restaure en fin de parcours, et
+    `syncPages = false` dans settings.json rend au mod un comportement strictement passif.
 
     ------------------------------------------------------------------------------------
     LE JSON PORTE SES PROPRES ECHECS
@@ -60,6 +69,14 @@ local DEFAULTS = {
     -- n'importe quoi. On ne boucle jamais sur une borne venue du jeu sans plafond.
     maxPages         = 200,
     maxSlotsPerPage  = 200,
+
+    -- Le jeu ne replique que la page synchronisee : sans cette passe, l'export ne contient
+    -- qu'une page sur 32 (constate au run 4). On appelle donc, page par page, la fonction
+    -- que l'ecran Palbox utilise lui-meme -- RequestPalBoxSyncPage_ToServer. Aucune donnee
+    -- n'est modifiee, mais l'etat de synchronisation change : mettre `false` rend au mod un
+    -- comportement strictement passif, au prix d'un export limite a la page courante.
+    syncPages        = true,
+    syncDelayMs      = 250, -- attente de la reponse serveur, par page
 }
 
 local cfg = config.new({ modName = MOD_NAME, defaults = DEFAULTS, logger = logger })
@@ -313,9 +330,14 @@ local function collect()
 
     local empty, unreadable, partial = 0, 0, 0
 
-    for _, entry in ipairs(gatherSlots(storage, pageNum, slotNum, warnings)) do
-        local slot, page, slotIndex = entry.slot, entry.page, entry.index
-        do
+    --- Lit les slots d'une page. Les slots sont re-resolus a chaque appel : apres une
+    -- resynchronisation, rien ne garantit que les objets memorises soient encore ceux que
+    -- le jeu utilise.
+    local function readPage(page)
+        for slotIndex = 0, slotNum - 1 do
+            local slot = query.call(storage, "GetSlot", page, slotIndex)
+            local entry = { source = "page synchronisee" }
+
             if slot == nil or not safe.isValid(slot) then
                 unreadable = unreadable + 1
             elseif query.call(slot, "IsEmpty") == true then
@@ -350,16 +372,89 @@ local function collect()
         end
     end
 
-    report.meta.slotsOccupied    = #report.pals
-    report.meta.palCount         = #report.pals - partial
-    report.meta.partialPals      = partial
-    report.meta.emptySlots       = empty
-    report.meta.unreadableSlots  = unreadable
-    report.warnings              = warnings.list
-    report.notes                 = warnings.notes
-    report.fieldFailures         = warnings.counts
+    --- Ferme le rapport et le rend a l'appelant.
+    local function finish(onDone)
+        report.meta.slotsOccupied    = #report.pals
+        report.meta.palCount         = #report.pals - partial
+        report.meta.partialPals      = partial
+        report.meta.emptySlots       = empty
+        report.meta.unreadableSlots  = unreadable
+        report.warnings              = warnings.list
+        report.notes                 = warnings.notes
+        report.fieldFailures         = warnings.counts
+        onDone(report)
+    end
 
-    return report
+    -- ---------------------------------------------------------------- parcours des pages
+    --
+    -- Le jeu ne replique que la page synchronisee : lire les 32 pages d'affilee ne rend que
+    -- des coquilles (run 4 : 30 Pals sur 727). On appelle donc, page par page, la fonction
+    -- que l'ecran Palbox appelle lui-meme quand le joueur tourne les pages :
+    -- APalPlayerState::RequestPalBoxSyncPage_ToServer -- UFUNCTION(BlueprintCallable,
+    -- Reliable, Server), presente au runtime (ObjectDump 2026-08-15).
+    --
+    -- Ce n'est PAS une modification de sauvegarde : on demande l'envoi de donnees qui
+    -- existent deja cote serveur. Mais c'est un appel qui change l'etat de synchronisation,
+    -- donc hors du read-only strict du brief SS3.2 -- arbitre avec Lucas le 2026-08-15.
+    -- La page d'origine est restauree a la fin, et `syncPages = false` rend au mod son
+    -- comportement strictement passif.
+    local playerState = query.playerState(logger)
+    local syncEnabled = cfg.get("syncPages", DEFAULTS.syncPages) == true
+        and pageNum > 1 and safe.isValid(playerState)
+
+    if not syncEnabled then
+        if cfg.get("syncPages", DEFAULTS.syncPages) ~= true then
+            warnings.note("syncPages desactive : seule la page courante sera lisible")
+        end
+        readPage(0)
+        for page = 1, pageNum - 1 do readPage(page) end
+        return function(onDone) finish(onDone) end
+    end
+
+    local originalPage = safe.get(storage, "SyncPageIndex")
+    local delayMs = cfg.get("syncDelayMs", DEFAULTS.syncDelayMs)
+
+    -- Renvoie un lanceur : la lecture est asynchrone, l'appelant fournit la suite.
+    return function(onDone)
+        local page = 0
+
+        local function step()
+            if page >= pageNum then
+                -- Remettre le jeu dans l'etat ou on l'a trouve.
+                if type(originalPage) == "number" then
+                    query.call(playerState, "RequestPalBoxSyncPage_ToServer", originalPage)
+                    warnings.note(string.format("page de synchronisation restauree a %d",
+                        originalPage))
+                end
+                finish(onDone)
+                return
+            end
+
+            local current = page
+            page = page + 1
+
+            query.callWhy(logger, playerState, "RequestPalBoxSyncPage_ToServer", current)
+
+            -- Laisser la reponse du serveur arriver avant de lire.
+            local ok = pcall(ExecuteWithDelay, delayMs, function()
+                safe.gameThread(logger, "lecture page " .. current, function()
+                    readPage(current)
+                    step()
+                end)
+            end)
+
+            if not ok then
+                logger.always("WARN", "ExecuteWithDelay indisponible : lecture immediate, "
+                    .. "les pages non encore repliquees resteront vides.")
+                readPage(current)
+                step()
+            end
+        end
+
+        logger.always("INFO", "Parcours des %d pages avec resynchronisation (%d ms/page, "
+            .. "~%.0f s au total).", pageNum, delayMs, pageNum * delayMs / 1000)
+        step()
+    end
 end
 
 --- Resume lisible dans UE4SS.log.
@@ -606,12 +701,16 @@ local function runExport()
     safe.gameThread(logger, "export Palbox", function()
         logger.always("INFO", "======== Export Palbox : debut ========")
 
-        local report = collect()
-        if report == nil then
+        -- `collect` rend un LANCEUR, pas un rapport : le parcours resynchronise les pages
+        -- une par une et doit attendre le serveur entre chaque. Tout ce qui suit la lecture
+        -- vit donc dans la continuation.
+        local start = collect()
+        if start == nil then
             logger.always("ERROR", "======== Export interrompu ========")
             return
         end
 
+        start(function(report)
         logSummary(report)
 
         local dropped = {}
@@ -633,13 +732,14 @@ local function runExport()
         writer.writeJson("export", clean)
 
         logger.always("INFO", "======== Export Palbox : fin ========")
+        end)
     end)
 end
 
 local function runSummary()
     safe.gameThread(logger, "resume Palbox", function()
-        local report = collect()
-        if report ~= nil then logSummary(report) end
+        local start = collect()
+        if start ~= nil then start(logSummary) end
     end)
 end
 

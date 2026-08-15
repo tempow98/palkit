@@ -11,27 +11,31 @@ renvoie les logs. Chaque étape est donc explicite jusqu'à la touche à presser
 > rassurant des runs précédents. C'est corrigé : il compte maintenant ce qu'il lit vraiment,
 > et deux nouvelles voies contournent la pagination. **Tu peux sauter les parties 1 et 2.**
 
-## Par quoi commencer — 5ᵉ passe
+## Par quoi commencer — 6ᵉ passe
 
 | Priorité | Quoi | Ce qu'on cherche | Build Dev ? |
 |---|---|---|---|
-| 1 | **`F8`** (résumé, sans fichier) | La ligne `Palbox : N Pals lus, M coquilles vides`. Si `M` tombe à ~0, le verrou de la réplication est levé | **Non** |
-| 2 | **`F7`** si `F8` est bon | Le JSON complet — le vrai livrable de M2 v0 | **Non** |
-| 3 | **`F5`** ×2, avec `F6` entre | La ligne `DesiredSize`, **mesurée 500 ms après l'ajout** cette fois | Oui |
+| 1 | **`F8`** (résumé, sans fichier) | `N Pals lus, M coquilles`. Attendu : **~727 lus, ~0 coquille** | **Non** |
+| 2 | **`F7`** si `F8` est bon | Le JSON complet — le livrable de M2 v0 | **Non** |
+| 3 | **`F5`** ×2, avec `F6` entre | La ligne `DesiredSize`, mesurée 500 ms après l'ajout | Oui |
 
-**Ce que j'attends de ce run**, dans l'ordre :
+**Nouveau : `F7` et `F8` prennent maintenant ~8 secondes** au lieu d'être instantanés. Le mod
+parcourt les 32 pages en demandant au serveur de synchroniser chacune — c'est exactement ce
+que fait le jeu quand tu tournes les pages de la Palbox, en plus rapide. Le log affiche
+`Parcours des 32 pages avec resynchronisation` au démarrage. **Laisse-le finir avant de
+presser autre chose.**
 
-1. **La ligne de résumé de `F8`.** Trois cas :
-   - `N Pals lus, 0 coquille` → le verrou est levé, `F7` et on passe à M2 v1 ;
-   - `N ≈ 30, ~697 coquilles` → les deux contournements ne suffisent pas ; il faudra
-     discuter d'écrire `SyncPageIndex`, ce qui sort du read-only strict — je ne le ferai
-     pas sans ton accord ;
-   - un nombre intermédiaire → dis-moi lequel, la répartition par page est dans le log.
-2. **Le JSON** si `F7` tourne (dépose-le à côté du log comme la dernière fois, c'est
-   parfait — je l'analyse directement).
-3. Pour le spike : la ligne `DesiredSize` **n'est plus mesurée dans la même frame**. Si un
-   widget affiche autre chose que `0.0x0.0`, c'est lui qui occupe une vraie place à l'écran —
-   et c'est la réponse à la question de M1.
+À surveiller pendant le parcours : si tu as **la Palbox ouverte à l'écran**, la page affichée
+peut bouger. Ferme-la avant de presser `F7`, c'est plus sûr — et dis-moi si tu observes quoi
+que ce soit d'anormal (page qui saute, ralentissement, message d'erreur du jeu).
+
+**Ce que j'attends**, dans l'ordre :
+
+1. **La ligne de résumé de `F8`** — c'est elle qui dit si le verrou est levé.
+2. **Le JSON** (dépose-le à côté du log, comme les fois précédentes : je l'analyse
+   directement, c'est lui qui fait foi, pas le résumé).
+3. La ligne `DesiredSize` du spike : autre chose que `0.0x0.0` = un widget qui occupe une
+   vraie place à l'écran, donc la réponse à la question de M1.
 
 ⚠️ **La sonde est sur `F11`**, pas F9 : ton `PalKitDump` occupe F9 (dump d'objets) et F10
 (acteurs), et presser F9 déclenchait un dump de 127 Mo **avant** la sonde.

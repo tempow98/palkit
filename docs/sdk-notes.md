@@ -268,11 +268,22 @@ Tout vient de `ModdingKit 62fad41` — `PalIndividualCharacterSaveParameter.h` e
 > client/serveur local. Le résumé du run 3 (« 723 Pals ») était faux pour la même raison : il
 > comptait un Pal dès qu'un slot était occupé, sans vérifier qu'un champ en sortait.
 >
-> **Deux contournements en lecture seule** sont implémentés et attendent le run 5 :
-> `TargetContainer` (le conteneur complet, `Num()`/`Get(i)`) et `CachedNonEmptySlots_InServer`
-> (la liste tenue côté serveur — et en solo, le joueur *est* le serveur). Écrire
-> `SyncPageIndex` marcherait sans doute aussi, mais c'est une écriture : hors du read-only
-> strict, donc à trancher avec Lucas avant d'y toucher.
+> ❌ **Les deux contournements en lecture seule ont échoué (run 5).** `TargetContainer` rend
+> bien **960 slots sur 960** — l'*accès* n'a jamais été le problème — mais les données
+> restent absentes : toujours 30 Pals, 697 coquilles, une seule page.
+> `CachedNonEmptySlots_InServer` est vide côté client. Ce n'est donc pas la pagination de
+> l'accès qui bloque, c'est bien la **réplication**.
+>
+> ✅ **Solution retenue : `APalPlayerState::RequestPalBoxSyncPage_ToServer(pageIndex)`**
+> (📘 `PalPlayerState.h:338`, `UFUNCTION(BlueprintCallable, Reliable, Server)`, confirmée au
+> runtime par l'ObjectDump). C'est la fonction que l'écran Palbox appelle lui-même quand le
+> joueur tourne les pages. Le mod la boucle sur les pages, lit après chaque réponse
+> (250 ms), puis **restaure la page d'origine**.
+>
+> ⚠️ **Cela sort du read-only strict du brief §3.2** — pas parce qu'on modifie une donnée
+> (aucune sauvegarde n'est touchée : on demande l'envoi de données qui existent déjà), mais
+> parce qu'on change un état de synchronisation. **Arbitré avec Lucas le 2026-08-15.**
+> `syncPages = false` rend au mod un comportement strictement passif.
 
 | Champ | Statut | Propriété `SaveParameter` | Getter |
 |---|---|---|---|
@@ -467,3 +478,5 @@ sauvegarde, pas à nous.
 | 2026-08-15 (run 4) | **L'export sort, et les `TArray` se lisent via `ForEach`** | Passifs confirmés. Le verrou du run 3 n'était pas la conversion mais l'objet sous-jacent |
 | 2026-08-15 (run 4) | **Seule la page courante est répliquée : 30 Pals réels sur 727 annoncés** | Le verrou majeur de M2. Le comptage était faux (un slot occupé ≠ un Pal lu), ce qui a masqué le problème deux runs de suite. Deux contournements en lecture seule implémentés : `TargetContainer` et `CachedNonEmptySlots_InServer` |
 | 2026-08-15 (run 4) | `GetDesiredSize()` mesuré dans la frame de l'ajout vaut toujours `0×0` | La mesure du spike était prise avant la passe de layout de Slate — verdict sans valeur sur les 5 cibles. Différée de 500 ms |
+| 2026-08-15 (run 5) | **Le comptage honnête confirme le verrou** : 30 lus / 697 coquilles, 1 page sur 32 | Le rapport dit enfin ce qu'il lit. `TargetContainer` rend 960/960 slots : l'accès n'était pas le problème, la réplication l'est |
+| 2026-08-15 (run 5) | **`RequestPalBoxSyncPage_ToServer` existe** (`PalPlayerState.h:338`, Reliable/Server) | La fonction que l'UI utilise pour tourner les pages. Seule voie vers un export complet ; sort du read-only strict, **arbitré avec Lucas** ; page d'origine restaurée, désactivable par `syncPages` |
