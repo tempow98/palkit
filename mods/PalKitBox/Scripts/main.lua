@@ -51,6 +51,7 @@ local DEFAULTS = {
     keys = {
         export  = "F7", -- export JSON complet
         summary = "F8", -- resume dans le log, sans fichier
+        probe   = "F9", -- sonde de diagnostic : quelle voie d'acces a la Palbox repond ?
     },
     -- Garde-fou : la Palbox fait 30 pages en 1.0, mais un serveur moddé peut annoncer
     -- n'importe quoi. On ne boucle jamais sur une borne venue du jeu sans plafond.
@@ -174,9 +175,10 @@ end
 --- Parcourt toutes les pages et renvoie le rapport complet.
 -- @return table|nil rapport
 local function collect()
-    local storage = query.palStorage(logger)
+    local storage, route = query.palStorage(logger)
     if storage == nil then
-        logger.always("ERROR", "Palbox inaccessible. Monde charge ? En multi/serveur, presser INS.")
+        logger.always("ERROR", "Palbox inaccessible. Monde charge ? En multi/serveur, presser INS. "
+            .. "Presser F9 pour savoir laquelle des voies d'acces echoue, et pourquoi.")
         return nil
     end
 
@@ -211,6 +213,9 @@ local function collect()
             generatedAt= os.date("%Y-%m-%d %H:%M:%S"),
             pageCount  = pageNum,
             slotsPerPage = slotNum,
+            -- Quelle voie d'acces a repondu : l'information qui fait passer la ligne
+            -- correspondante de docs/sdk-notes.md en verifie.
+            storageRoute = route,
         },
         pals = {},
     }
@@ -281,6 +286,128 @@ local function logSummary(report)
     end
 end
 
+-- ------------------------------------------------------------------ sonde de diagnostic
+--
+-- Pourquoi cette touche existe : le premier essai en jeu (2026-08-15) a rendu une seule
+-- ligne -- "GetPalStorage n'a rien renvoye" -- alors que la signature est bonne
+-- (PalPlayerState.h:573) et que l'instance existe bel et bien au runtime (ObjectDump :
+-- ...BP_PalPlayerState_C_2147480325.PalPlayerDataPalStorage_2147457951). Un echec qui ne
+-- distingue pas "mauvais objet", "membre non appelable" et "objet vide" ne se corrige
+-- qu'a l'aveugle. F9 essaie TOUTES les voies et rend compte de chacune.
+
+--- Nom + classe d'un UObject, en une ligne. Les deux comptent : l'ObjectDump montre deux
+-- BP_PalPlayerState_C vivants, que seul le nom complet distingue.
+local function describe(obj)
+    if obj == nil then return "<nil>" end
+    if not safe.isValid(obj) then return "<invalide> " .. query.nameOf(obj) end
+
+    local class = query.call(obj, "GetClass")
+    local className = class and query.nameOf(class) or "<classe inconnue>"
+    return string.format("%s [classe %s]", query.nameOf(obj), className)
+end
+
+--- Verifie qu'un storage est REELLEMENT exploitable, pas seulement valide.
+-- C'est l'etape qui compte : un UObject valide dont GetSlot ne repond pas ferait echouer
+-- l'export 200 slots plus loin, sans dire pourquoi.
+local function probeStorageDepth(storage)
+    local pages   = query.callWhy(logger, storage, "GetPageNum")
+    local pagesP  = safe.get(storage, "PageNum")
+    local slots   = safe.get(storage, "SlotNumInPage")
+
+    logger.always("INFO", "    GetPageNum()      : %s", tostring(pages))
+    logger.always("INFO", "    .PageNum          : %s", tostring(pagesP))
+    logger.always("INFO", "    .SlotNumInPage    : %s", tostring(slots))
+
+    local slot = query.callWhy(logger, storage, "GetSlot", 0, 0)
+    logger.always("INFO", "    GetSlot(0,0)      : %s", describe(slot))
+    if not safe.isValid(slot) then
+        logger.always("WARN", "    -> les slots ne repondent pas : voie inexploitable")
+        return
+    end
+
+    local isEmpty = query.callWhy(logger, slot, "IsEmpty")
+    logger.always("INFO", "    slot:IsEmpty()    : %s", tostring(isEmpty))
+
+    local handle = query.callWhy(logger, slot, "GetHandle")
+    logger.always("INFO", "    slot:GetHandle()  : %s", describe(handle))
+    if not safe.isValid(handle) then return end
+
+    local param = query.callWhy(logger, handle, "TryGetIndividualParameter")
+    logger.always("INFO", "    parametre individuel : %s", describe(param))
+    if not safe.isValid(param) then return end
+
+    -- Le controle final : un champ reellement lu. S'il sort, toute la chaine tient.
+    local saveParam = safe.get(param, "SaveParameter")
+    local species   = saveParam and query.str(safe.get(saveParam, "CharacterID"))
+    logger.always("INFO", "    SaveParameter.CharacterID : %s", tostring(species))
+end
+
+local function runDiagnostics()
+    safe.gameThread(logger, "sonde Palbox", function()
+        -- La sonde a besoin des messages DEBUG de query.callWhy : c'est tout son interet.
+        local previousLevel = log.getLevel()
+        log.setDebug(true)
+
+        logger.always("INFO", "======== Sonde Palbox : debut ========")
+
+        local controller = query.controller(logger)
+        logger.always("INFO", "PlayerController : %s", describe(controller))
+        logger.always("INFO", "World            : %s", describe(query.world(logger)))
+
+        if controller == nil then
+            logger.always("ERROR", "Pas de PlayerController : monde charge ? En multi, presser INS.")
+            logger.always("INFO", "======== Sonde Palbox : fin ========")
+            log.setLevel(previousLevel)
+            return
+        end
+
+        -- Les deux PlayerState, cote a cote. S'ils different, la cause racine est trouvee.
+        local viaGetter = query.callWhy(logger, controller, "GetPalPlayerState")
+        local viaProp   = safe.get(controller, "PlayerState")
+        logger.always("INFO", "PlayerState via GetPalPlayerState() : %s", describe(viaGetter))
+        logger.always("INFO", "PlayerState via .PlayerState       : %s", describe(viaProp))
+        if safe.isValid(viaGetter) and safe.isValid(viaProp)
+            and query.nameOf(viaGetter) ~= query.nameOf(viaProp) then
+            logger.always("WARN", "Les deux voies designent des objets DIFFERENTS "
+                .. "-- c'est la cause la plus probable de l'echec du 15/08.")
+        end
+
+        -- Toutes les voies, meme apres qu'une ait abouti : on veut la carte complete.
+        query.reset()
+        local winner = nil
+
+        for index, route in ipairs(query.palStorageRoutes) do
+            logger.always("INFO", "--- Voie %d/%d : %s ---",
+                index, #query.palStorageRoutes, route.name)
+
+            local ok, storage = pcall(route.resolve, logger)
+            if not ok then
+                logger.always("ERROR", "    a leve : %s", tostring(storage))
+            elseif not safe.isValid(storage) then
+                logger.always("WARN", "    aucun objet")
+            else
+                logger.always("INFO", "    objet : %s", describe(storage))
+                probeStorageDepth(storage)
+                if query.storageAnswers(logger, storage) and winner == nil then
+                    winner = route.name
+                end
+            end
+        end
+
+        if winner then
+            logger.always("INFO", "VERDICT : voie retenue -- %s", winner)
+            logger.always("INFO", "F7 devrait desormais produire l'export.")
+        else
+            logger.always("ERROR", "VERDICT : aucune voie n'aboutit. "
+                .. "Renvoyer ce log : les lignes DEBUG ci-dessus disent, pour chaque voie, "
+                .. "si le membre est absent, non appelable, ou s'il leve.")
+        end
+
+        logger.always("INFO", "======== Sonde Palbox : fin ========")
+        log.setLevel(previousLevel)
+    end)
+end
+
 -- ------------------------------------------------------------------ actions
 
 local writer = nil -- cree paresseusement : inutile tant qu'aucun export n'est demande
@@ -334,12 +461,14 @@ if type(Key) ~= "table" then
 else
     local exportKey  = cfg.get("keys.export", DEFAULTS.keys.export)
     local summaryKey = cfg.get("keys.summary", DEFAULTS.keys.summary)
+    local probeKey   = cfg.get("keys.probe", DEFAULTS.keys.probe)
 
     safe.keybind(logger, exportKey .. " (export Palbox)", Key[exportKey], nil, runExport)
     safe.keybind(logger, summaryKey .. " (resume Palbox)", Key[summaryKey], nil, runSummary)
+    safe.keybind(logger, probeKey .. " (sonde Palbox)", Key[probeKey], nil, runDiagnostics)
 
-    logger.always("INFO", "Palbox : %s exporte en JSON, %s resume dans le log.",
-        exportKey, summaryKey)
+    logger.always("INFO", "Palbox : %s exporte en JSON, %s resume dans le log, "
+        .. "%s diagnostique les voies d'acces.", exportKey, summaryKey, probeKey)
 end
 
 -- Un changement de monde invalide tous les objets caches. On ne peut pas s'accrocher a un

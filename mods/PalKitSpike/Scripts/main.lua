@@ -48,12 +48,22 @@ local state = {
 local DEFAULTS = {
     debug = true, -- le spike est un outil de diagnostic : verbeux par defaut
     probe = {
-        -- Fragments recherches dans les noms de classes de widgets. Volontairement larges :
-        -- on ne connait pas encore la convention de nommage de Palworld, c'est justement
-        -- ce que le palier 2 doit reveler.
-        namePatterns   = { "map", "minimap", "hud", "compass", "marker", "panel", "widget" },
+        -- Cibles nommees, tirees de l'ObjectDump du 2026-08-15. C'est le changement de
+        -- fond depuis le premier essai : on ne cherche plus a deviner une convention de
+        -- nommage, on connait les chemins exacts. Ordre = ordre d'essai du palier 3, du
+        -- plus leger (une icone seule, peu de dependances de donnees, donc le test
+        -- d'affichage le plus honnete) au plus lourd (la carte entiere).
+        knownClasses = {
+            "/Game/Pal/Blueprint/UI/UserInterface/InGame/Compass/WBP_CompassIconBase.WBP_CompassIconBase_C",
+            "/Game/Pal/Blueprint/UI/UserInterface/InGame/Compass/WBP_Ingame_Compass.WBP_Ingame_Compass_C",
+            "/Game/Pal/Blueprint/UI/UserInterface/Map/WBP_Map_Body.WBP_Map_Body_C",
+            "/Game/Pal/Blueprint/UI/UserInterface/Map/WBP_Map_Base.WBP_Map_Base_C",
+        },
+        -- Fragments de secours, appliques au nom de classe COURT (jamais au chemin :
+        -- "widget" matcherait "WidgetTree" dans presque tous les chemins du jeu).
+        -- Tires de la convention reelle WBP_<Domaine><Element>_C.
+        namePatterns   = { "compass", "map", "minimap", "radar", "overalluilayout" },
         maxCandidates  = 40,   -- borne de log : un dump complet noierait UE4SS.log
-        maxOnScreen    = 60,
     },
 }
 
@@ -71,6 +81,26 @@ local function nameOf(obj)
     return "<sans nom>"
 end
 
+--- Nom COURT de la classe d'un objet, sans le chemin.
+-- Le filtrage doit porter la-dessus, pas sur le full name : celui-ci contient le chemin
+-- complet, ou le fragment "widget" matche "WidgetTree" pour a peu pres tout le jeu.
+local function classNameOf(obj)
+    if obj == nil then return "<nil>" end
+    local ok, name = pcall(function() return obj:GetClass():GetFName():ToString() end)
+    if ok and type(name) == "string" then return name end
+    return "<classe inconnue>"
+end
+
+--- Un widget est-il une instance a l'ecran, ou un simple modele ?
+-- Piege releve au premier essai en jeu : les objets sous /Game/....:WidgetTree.X sont les
+-- archetypes portes par le CDO de chaque WidgetBlueprint -- ils existent des le chargement
+-- du package, sans que rien ne soit affiche. Les instances reelles vivent sous
+-- /Engine/Transient (l'arbre du GameInstance). Les "3204 UserWidget vivants" du log du
+-- 2026-08-15 etaient donc, pour l'essentiel, des modeles.
+local function isLiveInstance(fullName)
+    return string.find(fullName, "/Engine/Transient", 1, true) ~= nil
+end
+
 --- Vrai si `name` contient l'un des fragments (comparaison insensible a la casse).
 local function matchesAny(name, patterns)
     local lower = string.lower(name)
@@ -80,6 +110,15 @@ local function matchesAny(name, patterns)
         end
     end
     return false, nil
+end
+
+--- Ajoute un candidat, sans doublon de classe.
+local function addCandidate(class, name, origin)
+    for _, existing in ipairs(state.candidates) do
+        if existing.name == name then return false end
+    end
+    state.candidates[#state.candidates + 1] = { class = class, name = name, origin = origin }
+    return true
 end
 
 -- ------------------------------------------------------------------ palier 1
@@ -128,63 +167,105 @@ end
 
 -- ------------------------------------------------------------------ palier 2
 
---- Quelles classes de widgets sont chargees, et lesquelles ressemblent a une carte ?
--- FindAllOf("WidgetBlueprintGeneratedClass") renvoie les UClass elles-memes (les classes
--- generees SONT des instances de WidgetBlueprintGeneratedClass), pas des widgets vivants.
+--- Quelles classes de widgets sont mobilisables, et lesquelles ressemblent a une carte ?
+--
+-- Le premier essai en jeu (2026-08-15) a rendu "0 classes, 0 candidates", et le palier 3
+-- n'a donc jamais tourne. Trois causes, toutes corrigees ici :
+--   1. FindAllOf("WidgetBlueprintGeneratedClass") renvoie 0 sur ce build, alors que
+--      l'ObjectDump en compte 668 -- cette voie de decouverte est morte. On passe
+--      desormais par des chemins de classes CONNUS (voie A) et par les instances
+--      vivantes (voie B).
+--   2. les candidats n'etaient alimentes QUE par cette liste vide : les milliers de
+--      UserWidget trouves juste apres etaient logges, puis jetes.
+--   3. le filtre portait sur le full name (chemin compris), pas sur le nom de classe.
 local function stage2_discover()
-    logger.always("INFO", "--- Palier 2 : classes de widgets chargees ---")
+    logger.always("INFO", "--- Palier 2 : classes de widgets mobilisables ---")
 
     local patterns = cfg.get("probe.namePatterns", DEFAULTS.probe.namePatterns)
     local maxLog   = cfg.get("probe.maxCandidates", DEFAULTS.probe.maxCandidates)
+    local known    = cfg.get("probe.knownClasses", DEFAULTS.probe.knownClasses)
 
-    local _, classes = safe.call(logger, "FindAllOf(WidgetBlueprintGeneratedClass)",
-        function() return FindAllOf("WidgetBlueprintGeneratedClass") end)
-
-    if type(classes) ~= "table" then
-        logger.always("WARN", "Aucune WidgetBlueprintGeneratedClass retournee. "
-            .. "Les widgets ne sont peut-etre charges qu'a l'ouverture d'un menu : "
-            .. "reessayer carte du jeu ouverte.")
-        classes = {}
-    end
-
-    local total, matched = 0, 0
     state.candidates = {}
 
-    for _, class in ipairs(classes) do
-        total = total + 1
-        local name = nameOf(class)
-        local hit, fragment = matchesAny(name, patterns)
-        if hit then
-            matched = matched + 1
-            if matched <= maxLog then
-                logger.always("INFO", "  candidat [%s] %s", fragment, name)
-            end
-            state.candidates[#state.candidates + 1] = { class = class, name = name }
+    -- ---------------------------------------------------------------- voie A : chemins connus
+    -- StaticFindObject ne trouve que ce qui est deja charge : un echec ici signifie
+    -- "package non charge pour l'instant", pas "n'existe pas". D'ou le conseil de
+    -- relancer carte ouverte.
+    logger.always("INFO", "Voie A -- classes nommees (ObjectDump 2026-08-15) :")
+    for _, path in ipairs(known) do
+        local _, class = safe.call(logger, "StaticFindObject(" .. path .. ")",
+            function() return StaticFindObject(path) end)
+
+        if safe.isValid(class) then
+            addCandidate(class, nameOf(class), "connue")
+            logger.always("INFO", "  trouvee : %s", path)
+        else
+            logger.always("WARN", "  absente (package non charge ?) : %s", path)
         end
     end
 
-    logger.always("INFO", "%d classes de widgets chargees, %d candidates retenues%s",
-        total, matched,
-        matched > maxLog and string.format(" (%d premieres listees)", maxLog) or "")
-
-    -- Widgets VIVANTS a l'ecran. Reconnaissance directement reutilisable pour M2 :
-    -- c'est ici qu'on verra apparaitre les widgets de la Palbox quand elle est ouverte.
+    -- ---------------------------------------------------------------- voie B : instances vivantes
     local _, live = safe.call(logger, "FindAllOf(UserWidget)",
         function() return FindAllOf("UserWidget") end)
 
-    if type(live) == "table" then
-        local maxOnScreen = cfg.get("probe.maxOnScreen", DEFAULTS.probe.maxOnScreen)
-        logger.always("INFO", "--- %d UserWidget vivants (%d premiers) ---",
-            #live, math.min(#live, maxOnScreen))
-        for i = 1, math.min(#live, maxOnScreen) do
-            logger.always("INFO", "  vivant : %s", nameOf(live[i]))
-        end
-    else
+    if type(live) ~= "table" then
         logger.always("WARN", "FindAllOf(UserWidget) n'a rien retourne")
+        live = {}
+    end
+
+    -- Inventaire par classe plutot que liste d'instances : la liste repetait dix fois la
+    -- meme classe, l'inventaire est directement reversable dans docs/sdk-notes.md.
+    local byClass, order = {}, {}
+    local liveCount, templateCount = 0, 0
+
+    for _, widget in ipairs(live) do
+        local fullName = nameOf(widget)
+        if isLiveInstance(fullName) then
+            liveCount = liveCount + 1
+            local className = classNameOf(widget)
+            if byClass[className] == nil then
+                byClass[className] = { count = 0, sample = widget }
+                order[#order + 1] = className
+            end
+            byClass[className].count = byClass[className].count + 1
+        else
+            templateCount = templateCount + 1
+        end
+    end
+
+    logger.always("INFO", "Voie B -- %d UserWidget au total : %d instances vivantes, "
+        .. "%d modeles de CDO ignores", #live, liveCount, templateCount)
+
+    table.sort(order, function(a, b)
+        if byClass[a].count ~= byClass[b].count then
+            return byClass[a].count > byClass[b].count
+        end
+        return a < b
+    end)
+
+    logger.always("INFO", "--- Inventaire des classes vivantes (%d classes, %d listees) ---",
+        #order, math.min(#order, maxLog))
+    for i = 1, math.min(#order, maxLog) do
+        local className = order[i]
+        logger.always("INFO", "  %4d x %s", byClass[className].count, className)
+    end
+
+    -- Candidats de secours : les classes vivantes dont le nom COURT evoque une carte.
+    for _, className in ipairs(order) do
+        local hit, fragment = matchesAny(className, patterns)
+        if hit then
+            local _, cls = safe.call(logger, "GetClass",
+                function() return byClass[className].sample:GetClass() end)
+            if safe.isValid(cls) and addCandidate(cls, nameOf(cls), "vivante [" .. fragment .. "]") then
+                logger.always("INFO", "  candidat vivant [%s] %s", fragment, className)
+            end
+        end
     end
 
     if #state.candidates == 0 then
-        logger.always("WARN", "Palier 2 : aucun candidat. Le palier 3 sera saute.")
+        logger.always("WARN", "Palier 2 : aucun candidat. Le palier 3 sera saute. "
+            .. "Reessayer avec la carte du jeu ouverte : les packages d'UI ne sont "
+            .. "charges qu'a la premiere ouverture de l'ecran concerne.")
         return false
     end
 
@@ -209,8 +290,12 @@ local function stage3_instantiate(ctx)
         return
     end
 
+    -- Les candidats sont ordonnes par le palier 2 : les classes nommees de l'ObjectDump
+    -- d'abord (du plus leger au plus lourd), les trouvailles dynamiques ensuite. Prendre
+    -- le premier n'est donc plus un choix arbitraire -- mais on dit lequel, et pourquoi.
     local target = state.candidates[1]
-    logger.always("INFO", "Cible retenue : %s", target.name)
+    logger.always("INFO", "Cible retenue : %s (origine : %s, sur %d candidats)",
+        target.name, tostring(target.origin), #state.candidates)
 
     safe.gameThread(logger, "stage3", function()
         local widget = nil

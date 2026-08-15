@@ -140,6 +140,53 @@ check("nameOf sur objet muet", query.nameOf({}) == "<sans nom>")
 check("reset ne leve pas", pcall(query.reset))
 check("reset idempotent", pcall(query.reset))
 
+-- callWhy doit DIRE pourquoi il echoue. C'est ce qui manquait au premier essai en jeu du
+-- 2026-08-15 : "GetPalStorage n'a rien renvoye" ne distinguait pas trois causes qui
+-- appellent trois corrections differentes.
+local said = {}
+local fakeLogger = {
+    debug = function(fmt, ...)
+        local ok, msg = pcall(string.format, fmt, ...)
+        said[#said + 1] = ok and msg or fmt
+    end,
+}
+local function lastSaid() return said[#said] or "" end
+
+check("callWhy rend la valeur", query.callWhy(fakeLogger, fakeObj, "GetThing") == 42)
+check("callWhy silencieux quand ca marche", #said == 0)
+
+query.callWhy(fakeLogger, fakeObj, "PasLa")
+check("callWhy signale un membre non appelable",
+      lastSaid():find("non appelable", 1, true) ~= nil, lastSaid())
+
+query.callWhy(fakeLogger, fakeObj, "Boom")
+check("callWhy signale une levee", lastSaid():find("a leve", 1, true) ~= nil, lastSaid())
+
+query.callWhy(fakeLogger, nil, "GetThing")
+check("callWhy signale l'objet nil", lastSaid():find("nil", 1, true) ~= nil, lastSaid())
+
+-- storageAnswers : un UObject valide ne suffit pas, il doit repondre. Un storage vide
+-- accepte ici ferait echouer l'export 200 slots plus loin, sans dire pourquoi.
+local function fakeStorage(fields)
+    fields.IsValid = function() return true end
+    return fields
+end
+
+check("storage avec GetPageNum est retenu",
+      query.storageAnswers(fakeLogger, fakeStorage({ GetPageNum = function() return 30 end })))
+check("storage avec la seule propriete PageNum est retenu",
+      query.storageAnswers(fakeLogger, fakeStorage({ PageNum = 12 })))
+check("storage a zero page est ecarte",
+      not query.storageAnswers(fakeLogger, fakeStorage({ PageNum = 0 })))
+check("storage muet est ecarte",
+      not query.storageAnswers(fakeLogger, fakeStorage({})))
+check("storage nil est ecarte", not query.storageAnswers(fakeLogger, nil))
+
+check("les voies d'acces Palbox sont exposees et nommees",
+      type(query.palStorageRoutes) == "table" and #query.palStorageRoutes >= 4
+      and type(query.palStorageRoutes[1].name) == "string"
+      and type(query.palStorageRoutes[1].resolve) == "function")
+
 -- ---------------------------------------------------------------- palio
 local palio = require("palio")
 

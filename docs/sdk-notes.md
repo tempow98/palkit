@@ -10,12 +10,15 @@
    change le build moteur : sans la source, on ne peut pas revalider, et l'entrée devient un
    piège plutôt qu'une aide.
 2. Statuts : ⬜ à identifier · 🟡 hypothèse non vérifiée · 📘 signature lue dans un header
-   1.0 · ✅ vérifié en jeu
+   1.0 · ✅ vérifié en jeu · ❌ signature confirmée, mais **appel Lua échoué en jeu**
 3. Une hypothèse 🟡 ne part **jamais** en production. Elle doit passer par un test de Lucas.
 4. **📘 est exploitable pour coder, pas pour publier.** La signature est certaine (elle vient
    du header de la version 1.0), mais rien ne prouve que l'objet existe au runtime, ni qu'il
    soit joignable depuis le Lua. Une entrée 📘 porte `ModdingKit <sha> — <Fichier>.h` en
    source, et passe en ✅ après un aller-retour en jeu — jamais avant.
+5. **❌ vaut mieux que 📘 pour une signature qui a échoué.** Une ligne qui reste 📘 après un
+   échec en jeu invite à réessayer la même chose. ❌ dit : le nom est bon, c'est le **chemin
+   d'accès** qui est à trouver — et l'entrée porte alors les voies déjà essayées.
 
 ## Contexte de version
 
@@ -27,6 +30,8 @@
 | Build UE4SS requis | `UE4SS-Palworld_zDev.zip` (Dev) | GitHub releases | 2026-08-15 |
 | Lua UE4SS | 5.4 | doc UE4SS | 2026-08-15 |
 | **Headers Pal 1.0** | `localcc/PalworldModdingKit`, commit `62fad41` du 2026-07-11 (« update_10_patch1 »), 3 670 headers | `scripts/fetch-headers.sh` → `reference/` | 2026-08-15 |
+| **ObjectDump** | `UE4SS_ObjectDump.txt`, 574 889 lignes / 127 Mo, monde `MainWorld_5` chargé, Palbox ouverte | `CTRL+J` de Lucas, déposé sur le Pi (`~/palkit/logs/`) | 2026-08-15 |
+| Premier run en jeu | log UE4SS 17:00→17:12 : `PalKitBox` KO, `PalKitSpike` paliers 3–4 non atteints | `UE4SS.log` de Lucas | 2026-08-15 |
 
 ### D'où viennent les entrées 📘
 
@@ -50,6 +55,18 @@ grep -rn "GetPalStorage" reference/PalworldModdingKit/Source/Pal/Public/
 | PalMiniMap est sous **licence MIT** | Réutilisation possible **avec attribution**. À ce jour aucun code n'en est repris. | GitHub |
 | UE4SS ne fournit **pas de bibliothèque JSON** au Lua | `shared/json.lua` est une implémentation PalKit. | doc UE4SS |
 | `package.path` contient le dossier `Scripts/` du mod courant | Sert à résoudre le dossier du mod sans chemin en dur (`shared/config.lua`). | comportement UE4SS |
+
+### Acquis du premier run en jeu (2026-08-15)
+
+| Fait | Conséquence | Source |
+|---|---|---|
+| Moteur **UE 5.1** | Les signatures moteur (`K2_GetActorLocation`, etc.) sont celles de 5.1. | PS scan UE4SS |
+| `ConsoleManagerSingleton` **introuvable** (2 valeurs candidates) | **Pas de console UE4SS** sur ce build : aucun repli par commande console, tout passe par le Lua. | `UE4SS.log` au démarrage |
+| `FindAllOf("WidgetBlueprintGeneratedClass")` renvoie **0** | Alors que l'ObjectDump en compte **668**. Cette voie de découverte des classes d'UI est **morte** : passer par `StaticFindObject(<chemin>)` ou par la classe des instances vivantes. | log F5 + ObjectDump |
+| Un `UserWidget` sous `/Game/….:WidgetTree.X` est un **modèle de CDO**, pas un widget affiché | Les instances réelles vivent sous `/Engine/Transient.PalGameEngine…`. Les « 3 204 UserWidget vivants » du premier log étaient, pour l'essentiel, des modèles — et instancier un modèle n'aurait rien affiché. | log F5 + ObjectDump |
+| **Deux `BP_PalPlayerState_C` vivants** en solo (`_2147480325`, `_2147480221`), **un seul** porte une `PalPlayerDataPalStorage` | Cause la plus probable de l'échec `GetPalStorage` : la propriété moteur `PlayerState` n'offre aucune garantie de désigner le bon. | ObjectDump |
+| Le pawn joueur est un **Blueprint dérivé** (`BP_Player_Female_C`), pas `APalPlayerCharacter` nu | Ne jamais tester une classe par égalité stricte ; toujours par héritage. | log F5 |
+| L'arbre d'UI vivant est enraciné sous la **GameInstance** (`BP_PalGameInstance_C` → `WBP_PalOverallUILayout_C`), pas sous le PlayerController | C'est le conteneur auquel M1 devra s'accrocher. | log F5 |
 
 ---
 
@@ -78,12 +95,14 @@ grep -rn "GetPalStorage" reference/PalworldModdingKit/Source/Pal/Public/
 
 | Cible | Statut | Nom exact | Source | Date |
 |---|---|---|---|---|
-| Voie d'affichage en Lua pur | ⬜ | **question du spike** — aucun header ne répond à ça | | |
+| Voie d'affichage en Lua pur | ⬜ | **question du spike** — aucun header ne répond à ça. Toujours ouverte : au premier run, le palier 3 n'a pas été atteint (palier 2 sans candidat) | log F5 | 2026-08-15 |
 | Texture de world map | 📘 | `APalWorldMapCapture` : props `worldMapTexture` (UTexture2D), `worldMapHeightTexture`, et `GetRenderedWorldMapTexture()` | ModdingKit 62fad41 — `PalWorldMapCapture.h` | 2026-08-15 |
 | Widget de carte du jeu | 📘 | `UPalUIWorldMap` : `UPalUserWidgetOverlayUI` ; `CreateWorldMapData(EPalWorldMapType)`, `AddWorldMapIcon()`, `RemoveWorldMapIcon()`, `GetNearestIconWidget()` | ModdingKit 62fad41 — `PalUIWorldMap.h` | 2026-08-15 |
 | Widget d'icône de carte | 📘 | `UPalUIWorldMapIcon` | ModdingKit 62fad41 — `PalUIWorldMapIcon.h` | 2026-08-15 |
 | Zones de la carte (data table) | 📘 | `FPalWorldMapAreaDataRow`, accès via `UPalMasterDataTableAccess_WorldMapAreaData` | ModdingKit 62fad41 — `PalWorldMapAreaDataRow.h` | 2026-08-15 |
-| Mapping monde → coordonnées carte | ⬜ | aucune fonction de conversion publique trouvée dans `PalUIWorldMap.h` — probablement dans le Blueprint dérivé, donc **hors headers** | | |
+| Mapping monde → coordonnées carte | ✅ | **dans le Blueprint dérivé, comme supposé.** `WBP_Map_Body_C` porte `CalcMapImagePosition`, `GetMapCanvasPosition`, `AdjustScrollByWorldLocation`, `GetCursorWorldLocation`, `GetWIndowCenterWorldLocation` | ObjectDump 2026-08-15 | 2026-08-15 |
+| Position d'une icône sur le relief | ✅ | `GetLocationOnLandscape()`, porté par `UPalUIWorldMapIcon` **et** par les icônes Blueprint (`WBP_Map_IconBoss/Custom/Tower_C`) | ObjectDump 2026-08-15 | 2026-08-15 |
+| Données de carte du client | 📘 | `UPalUtility:GetLocalWorldMapData()` | ObjectDump 2026-08-15 | 2026-08-15 |
 
 > ⚠️ `APalWorldMapCapture` porte un `USceneCaptureComponent2D`. C'est exactement ce que le
 > brief §3.3 interdit de faire tourner nous-mêmes : on **lit** `worldMapTexture`, on ne
@@ -137,6 +156,12 @@ et sous quel nom de Blueprint dérivé — c'est le rôle du dump d'acteurs (`CT
 C'est l'acquis le plus important de la passe headers : les Pals de la Palbox sont lisibles
 depuis les données du joueur, donc **sans dépendre du spike de rendu ni de l'écran ouvert**.
 
+> ❌ **Cette chaîne a échoué au premier essai en jeu (2026-08-15)** : `GetPalStorage n'a rien
+> renvoyé`. Le nom n'est pas en cause — l'ObjectDump du même run montre l'instance bien
+> vivante, à `…:PersistentLevel.BP_PalPlayerState_C_2147480325.PalPlayerDataPalStorage_2147457951`.
+> C'est le **chemin d'accès** qui est en cause, et le suspect est identifié : **deux
+> `BP_PalPlayerState_C` coexistent**, un seul porte la Palbox. Voir les voies ci-dessous.
+
 ```
 UEHelpers.GetPlayerController()            -- APalPlayerController
   → .PlayerState                           -- APalPlayerState (propriété moteur)
@@ -154,11 +179,30 @@ faut passer une table vide et relire l'argument après appel, pas espérer une v
 Repli si ça résiste : `UPalPlayerDataPalStorage:GetSlot(pageIndex, slotIndex)`, un slot à la
 fois, avec `GetSlotCountInPage` côté modèle UI — plus lent mais sans out-param.
 
+### Les quatre voies d'accès à la Palbox
+
+Implémentées en cascade dans `shared/query.lua` (`query.palStorageRoutes`), essayées dans cet
+ordre, et **diagnosticables une par une** avec `F9` de `PalKitBox`. La première qui rend un
+objet *qui répond* (`GetPageNum` ou `PageNum` > 0) gagne, et son nom est journalisé — c'est
+lui qui fera passer la ligne en ✅.
+
+| # | Voie | Statut | Pourquoi elle est là | Source |
+|---|---|---|---|---|
+| 1 | `APalPlayerState:GetPalStorage()` | ❌ | Voie du premier essai. Signature bonne, retour vide | `PalPlayerState.h:573` |
+| 2 | `APalPlayerState.PalStorage` (propriété) | ⬜ | `UPROPERTY(BlueprintReadWrite, Replicated)` : une propriété se lit souvent là où l'appel d'une `UFUNCTION` résiste | `PalPlayerState.h:180` |
+| 3 | `UPalUtility.GetPalStorageDataByPlayerUID(world, uid)` | ⬜ | **Statique, via le CDO `/Script/Pal.Default__PalUtility`** : contourne entièrement le PlayerState, donc aussi l'ambiguïté des deux instances. Le `uid` vient de `APalPlayerController:GetPlayerUId()` | `PalUtility.h:1182` + ObjectDump |
+| 4 | `FindAllOf("PalPlayerDataPalStorage")` | ⬜ | Filet. Parcours global, donc **hors boucle et une seule fois** (règle 2 de `query.lua`), en écartant le CDO `Default__` | ObjectDump |
+
+> En amont des voies 1 et 2, le PlayerState lui-même se résout par
+> `APalPlayerController:GetPalPlayerState()` (📘 `PalPlayerController.h:935`) **avant** la
+> propriété moteur `PlayerState` : le getter Pal sait ce qu'est un PlayerState *Pal*, la
+> propriété moteur n'en sait rien. C'est le correctif le plus direct du bug du 15/08.
+
 ### Conteneurs
 
 | Cible | Statut | Classe | Fichier |
 |---|---|---|---|
-| Palbox (données joueur) | 📘 | `UPalPlayerDataPalStorage`, obtenu par `APalPlayerState:GetPalStorage()` | `PalPlayerDataPalStorage.h`, `PalPlayerState.h` |
+| Palbox (données joueur) | ❌ | `UPalPlayerDataPalStorage` — la classe et l'instance sont confirmées au runtime ; c'est l'**accès** qui reste à prouver (voir les quatre voies ci-dessus) | `PalPlayerDataPalStorage.h`, ObjectDump 2026-08-15 |
 | Conteneur générique de Pals | 📘 | `UPalIndividualCharacterContainer : UPalContainerBase` — `Num()`, `GetSlots()`, `Get(i)`, `FindByHandle()` | `PalIndividualCharacterContainer.h` |
 | Stockage dimensionnel | 📘 | `UPalPlayerDataPalDimensionStorage`, obtenu par `UPalPlayerDataPalStorage:GetDimensionStorage()` | `PalPlayerDataPalDimensionStorage.h` |
 | Stockage global (transfert entre mondes) | 📘 | `UPalGlobalPalStorageSubsystem`, `FPalGlobalPalStorageSaveParameter` | `PalGlobalPalStorageSubsystem.h` |
@@ -207,13 +251,12 @@ Tout vient de `ModdingKit 62fad41` — `PalIndividualCharacterSaveParameter.h` e
 | Item de liste (slot) | 📘 | `UPalIndividualCharacterSlot` — c'est le **modèle**, pas le widget | `PalIndividualCharacterSlot.h` |
 | Fenêtre de tri | 📘 | `UPalUIPalBoxSortWindow` | `PalUIPalBoxSortWindow.h` |
 | Sélection d'un slot | 📘 | `UPalUIPalBoxModel:SelectHandleSlot(DisplayIndex, EPalItemSlotPressType)` | `PalUIPalBoxModel.h` |
-| Widget d'une case (le `WBP_` réel) | ⬜ | dérivé Blueprint : **hors headers**, sortira de l'ObjectDump | |
-| Mécanisme de surlignage | ⬜ | idem, dépend du widget Blueprint | |
+| Écran Palbox (le `WBP_` réel) | ✅ | `WBP_PalStorageMenu_C` → `WBP_IngameMenu_PalBox` → `WBP_BoxPalList` → `WBP_BoxPalListBase_C` | log F5 2026-08-15, Palbox ouverte |
+| Widget d'une case | ✅ | `WBP_PalCommonCharacterSlot` → `WBP_PalCommonCharacterIcon_C` | log F5 2026-08-15 |
+| Fenêtre de tri (le `WBP_` réel) | ✅ | `WBP_PalStorageSortSettingWindow_C`, avec `WBP_PalStorageSortElementFilterCheckBox_C`, `WBP_PalStorageSortWorkSuitabilityFilterCheckBox_C`, `WBP_PalGenderIcon_C`, `WBP_PalElementIcon_C`, `WBP_IconPalWork_C` | log F5 2026-08-15 |
+| Mécanisme de surlignage | ⬜ | dépend du widget de case : à lire dans le détail de `WBP_BoxPalListBase_C` | |
 | Capture du focus clavier | ⬜ | dépend de la voie de rendu tranchée par le spike | |
 
-> Le palier 2 du spike logge les `UserWidget` **vivants**. Le relancer **Palbox ouverte**
-> donne les trois lignes ⬜ ci-dessus.
->
 > **M2 v0 n'a besoin d'aucune de ces lignes** : la lecture passe par les données joueur
 > (voir la chaîne d'accès plus haut). Seul l'affichage in-game en dépend.
 
@@ -234,7 +277,11 @@ Source de toutes les lignes 📘 : `ModdingKit 62fad41`, 2026-08-15.
 | Objets qui modifient la reproduction | 📘 | `FPalBreedingItemEffectData` — porte **`CombiRankBonus`** (donc le CombiRank est modifiable par objet en 1.0) | `PalBreedingItemEffectData.h` |
 | Œufs | 📘 | `FPalEggLotteryData`, `UPalDynamicPalEggItemDataBase`, `EPalEggSpecialType` | `PalEggLotteryData.h` |
 | **Awakening** (1.0) | 📘 | `FPalAwakeningItemElementDataRow` (`ElementType`), état sur le Pal : `bIsAwakening` / `IsAwakening()`, délégué `OnAwakeningDelegate` | `PalAwakeningItemElementDataRow.h` |
-| **Mutation** (1.0) | ⬜ | **aucun header ne contient « Mutation »**. Soit le mécanisme porte un autre nom interne, soit il vit dans des Blueprints. À rechercher dans l'ObjectDump | |
+| **Mutation** (1.0) — paramètres | ✅ | `UPalGameSetting` : `Combi_MutationRate`, `Combi_MutationRankCoefficient`, `Combi_MutationRankDiffPenalty`, `Combi_MutationRandomCoefficient`, `Combi_MutationMinTalent` (uint8), `Combi_MutationInitialRank` (uint8) | `PalGameSetting.h:1865-1883`, confirmé ObjectDump |
+| **Mutation** — bonus par objet | 📘 | `FPalBreedingItemEffectData.MutationRateBonusPercent` (à côté de `CombiRankBonus`) | `PalBreedingItemEffectData.h` |
+| **Mutation** — œuf issu d'une mutation | 📘 | `FPalExtraEggCacheInfo.bIsMutationEgg` ; ids d'objets `MutationPalEggStaticItemIds`, `PalEggMapObjectId_Mutation` | ObjectDump 2026-08-15 |
+| **Mutation** — compteur joueur | 📘 | `UPalPlayerRecordData.MutationCount` (et `FPalLoggedinPlayerSaveDataRecordData.MutationCount`) | ObjectDump 2026-08-15 |
+| **Mutation** — passifs réservés | 📘 | `FPalPassiveSkillDatabaseRow.AddMutationPal`, table `MutationPalAssignableSkillMap` | ObjectDump 2026-08-15 |
 | Accès aux data tables depuis le Lua | 🟡 | famille `UPalMasterDataTableAccess_*` (une classe par table) — pas encore vérifié que ce soit joignable côté Lua | `PalMasterDataTableAccess_*.h` |
 
 > ⚠️ **Ne hardcoder aucune table de rangs.** Elle deviendrait fausse au prochain patch, et
@@ -247,8 +294,75 @@ Source de toutes les lignes 📘 : `ModdingKit 62fad41`, 2026-08-15.
 >
 > **Mutation et Awakening sont des ajouts de la 1.0** : absents des calculateurs web, donc
 > à la fois un risque de spec et notre principal différenciateur sur ce module.
+>
+> ⚠️ **Correction du 2026-08-15.** Ce document a affirmé qu'« aucun header ne mentionne
+> Mutation ». **C'est faux** : `PalGameSetting.h:1865-1883` porte les six paramètres de la
+> formule. Le premier grep avait été mené sur les seuls fichiers déjà cités dans ces notes,
+> pas sur l'arbre complet. La leçon vaut au-delà de cette ligne : **une absence n'est un fait
+> qu'accompagnée de la commande qui l'a établie** — et `grep -ril <terme> reference/` est le
+> minimum avant d'écrire « n'existe pas ».
+>
+> Conséquence de fond : la formule de mutation est **paramétrée côté jeu**, pas codée en dur.
+> `Combi_MutationRate` et consorts se lisent au runtime — les figer dans PalKit reproduirait
+> exactement l'erreur des calculateurs web.
 
 ---
+
+# Blueprints observés en jeu
+
+Tout ce qui suit vient du run du **2026-08-15** — log `F5` (widgets vivants, Palbox ouverte)
+et `UE4SS_ObjectDump.txt` (574 889 lignes). C'est la couche que Pocketpair a écrite en
+Blueprint par-dessus le C++ : invisible aux headers, et indispensable à M1.
+
+**Convention de nommage** : `WBP_<Domaine><Élément>_C` pour les widgets, `BP_<Classe>_C` pour
+les acteurs. Domaines observés : `PalStorage`, `BoxPal`, `Map`, `IngameCompass`,
+`MainMenu_Pal`, `PalCommon`, `Ingame`, `Option`, `Guild`, `Paldex`.
+
+### Carte et boussole — les cibles de M1
+
+Chemins complets, vérifiables par `grep -F "<chemin>" ~/palkit/logs/UE4SS_ObjectDump.txt` :
+
+| Rôle | Classe | Chemin du package |
+|---|---|---|
+| Corps de carte (texture + scroll + zoom) | `WBP_Map_Body_C` | `/Game/Pal/Blueprint/UI/UserInterface/Map/WBP_Map_Body` |
+| Écran de carte complet | `WBP_Map_Base_C` | `…/Map/WBP_Map_Base` |
+| Curseur de carte | `WBP_Map_Cursor_C` | `…/Map/WBP_Map_Cursor` |
+| Filtre d'icônes | `WBP_MapFilter_C`, `WBP_MapFilter_Content_C`, `WBP_MapFilter_Win_C` | `…/Map/` |
+| Icônes de carte | `WBP_Map_Icon_C`, `_IconBoss_C`, `_IconCamp_C`, `_IconCustom_C`, `_IconPlayer_C`, `_IconTower_C`, `_IconFTTower_C`, `WBP_Map_StandAloneBossIcon_C` | `…/Map/` |
+| **Boussole HUD** (affichée en jeu, en permanence) | `WBP_Ingame_Compass_C` | `/Game/Pal/Blueprint/UI/UserInterface/InGame/Compass/WBP_Ingame_Compass` |
+| Icône de boussole (base) | `WBP_CompassIconBase_C` | `…/InGame/Compass/WBP_CompassIconBase` |
+| Icônes de boussole spécialisées | `WBP_CompassIcon_ForPal_C`, `_ForMapObject_C`, `_ForLevelObject_C`, `WBP_IngameCompass_{arrow,camp,BossTower,CustomMarker,DeathMark,dungeonGoal,dungeonPortal,FastTravel,Quest,Supply,TreasureMapPoint,WarpPoint}_C` | `…/InGame/Compass/` |
+
+> **La boussole est le meilleur point d'entrée de M1**, et c'est un acquis inattendu de ce
+> run : `WBP_Ingame_Compass_C` est déjà un HUD conçu pour rester à l'écran pendant le jeu,
+> peuplé d'icônes typées (Pal, camp, donjon, fast travel…) — soit exactement la sémantique
+> d'une minimap, sans le problème de la texture de carte. Le spike la teste en deuxième
+> cible, juste après `WBP_CompassIconBase_C` (plus légère, donc test d'affichage plus franc).
+
+### Palbox et menus
+
+| Rôle | Classes |
+|---|---|
+| Racine de tout l'UI vivant | `WBP_PalOverallUILayout_C`, sous `/Engine/Transient.PalGameEngine:BP_PalGameInstance_C` |
+| Écran Palbox | `WBP_PalStorageMenu_C` → `WBP_IngameMenu_PalBox` → `WBP_BoxPalList` → `WBP_BoxPalListBase_C` |
+| Tri Palbox | `WBP_PalStorageSortSettingWindow_C`, `WBP_PalStorageSortElementFilterCheckBox_C`, `WBP_PalStorageSortWorkSuitabilityFilterCheckBox_C` |
+| Icônes de Pal | `WBP_PalCommonCharacterSlot`, `WBP_PalCommonCharacterIcon_C`, `WBP_PalGenderIcon_C`, `WBP_PalElementIcon_C`, `WBP_IconPalWork_C` |
+| Slots d'objets | `WBP_PalInGameMenuItemSlot_C`, `WBP_PalInGameMenuItemSlotButton_C`, `WBP_PalInGameMenuItemIcon_C`, `WBP_InventoryEquipment_PalIcon_C`, `WBP_PalItemSlotDragDropIcon_C`, `WBP_PalLiftItem` |
+| Fiche Pal (menu) | `WBP_MainMenu_Pal_WorkIconText_C`, `_WorkGauge_C`, `_WorkIcon_C`, `_FoodAmount_C`, `_FoodAmountIcon_C`, `WBP_MainMenu_Pal_Skill_Active_C`, `_Skill_Passive_C`, `WBP_MainMenu_Cursor_C` |
+| Communs | `WBP_PalCommonWindow_C`, `WBP_CommonButton_C`, `WBP_PalCommonButton_C`, `WBP_PalInvisibleButton_C`, `WBP_PalKeyGuideIcon_C` |
+| HUD divers | `WBP_PalHungerHud_C`, `WBP_PalHungerIcon_C`, `WBP_PalStatusPopup_C`, `WBP_Ingame_Interact_C`, `WBP_GameOver_Down_C`, `WBP_DyingFriendLoupe_C`, `WBP_GuildMemberGauge_C` |
+| Mods (écran du jeu lui-même) | `WBP_ModDisclaimerDialog` |
+
+### Acteurs et objets racines
+
+| Rôle | Instance observée |
+|---|---|
+| Monde | `/Game/Pal/Maps/MainWorld_5/PL_MainWorld5` |
+| PlayerController | `BP_PalPlayerController_C_2147480323` |
+| PlayerState | `BP_PalPlayerState_C_2147480325` (**porte la Palbox**) et `BP_PalPlayerState_C_2147480221` (non) |
+| Palbox | `…BP_PalPlayerState_C_2147480325.PalPlayerDataPalStorage_2147457951` |
+| Pawn joueur | `BP_Player_Female_C_2147480255` |
+| GameInstance / Engine | `BP_PalGameInstance_C_2147482476`, `PalGameEngine_2147482588` |
 
 # Ce que les headers ne donnent pas
 
@@ -257,12 +371,19 @@ choses restent la raison d'être des dumps in-game :
 
 | Manque | Conséquence | Ce qui le comble |
 |---|---|---|
-| **Les Blueprints dérivés** (`BP_*`, `WBP_*`) | Toute la couche que Pocketpair a écrite en Blueprint par-dessus le C++ est invisible : widgets réels de la Palbox, icônes de carte, conversion monde → carte | `CTRL + J` (ObjectDump) — le seul qui liste les objets par chemin complet |
-| **Ce qui existe au runtime** | Une classe présente dans un header peut n'être jamais instanciée, ou seulement dans certaines zones | `CTRL + NUM_7` (dump d'acteurs), deux passes : extérieur, puis Palbox ouverte |
-| **Ce qui est joignable depuis le Lua** | Une `UFUNCTION` peut exister sans être appelable via UE4SS (paramètres non marshalables, `FFixedPoint64`, out-params) | Le premier essai en jeu — c'est ce qui fait passer 📘 → ✅ |
+| **Les Blueprints dérivés** (`BP_*`, `WBP_*`) | Toute la couche que Pocketpair a écrite en Blueprint par-dessus le C++ est invisible : widgets réels de la Palbox, icônes de carte, conversion monde → carte | ✅ **fait** — `CTRL + J` du 2026-08-15, dépouillé dans « Blueprints observés en jeu » |
+| **Ce qui existe au runtime** | Une classe présente dans un header peut n'être jamais instanciée, ou seulement dans certaines zones | ✅ en partie — le même ObjectDump donne les instances vivantes. `CTRL + NUM_7` reste utile pour une passe **en extérieur** (Pals sauvages, coffres, donjons), que ce dump-là ne couvre pas |
+| **Ce qui est joignable depuis le Lua** | Une `UFUNCTION` peut exister sans être appelable via UE4SS (paramètres non marshalables, `FFixedPoint64`, out-params) | ⬜ **le seul vrai manque restant** — et le run du 15/08 vient d'en donner le premier exemple avec `GetPalStorage`. C'est ce qui fait passer 📘 → ✅ ou → ❌ |
 
-Autrement dit : les headers ont supprimé le besoin du dump `CTRL + H`, pas celui des autres.
-Le `.usmap` (`CTRL + NUM_6`) reste facultatif — il sert aux outils de sauvegarde, pas à nous.
+Autrement dit : les headers ont supprimé le besoin du dump `CTRL + H`, et l'ObjectDump du
+2026-08-15 a réglé les deux premières lignes. Ne reste que la troisième, qui ne se règle que
+manette en main. Le `.usmap` (`CTRL + NUM_6`) reste facultatif — il sert aux outils de
+sauvegarde, pas à nous.
+
+> ⚠️ **Un dump n'est pas une preuve d'accessibilité.** L'ObjectDump prouve qu'un objet existe
+> et sous quel chemin ; il ne dit rien de ce qu'UE4SS sait en faire. `GetPalStorage` est
+> présente dans le dump, avec son `ReturnValue` — et elle a quand même rendu vide. Les deux
+> questions sont indépendantes, et seule la seconde décide de ce qui part en production.
 
 ## Journal des découvertes
 
@@ -273,3 +394,10 @@ Le `.usmap` (`CTRL + NUM_6`) reste facultatif — il sert aux outils de sauvegar
 | 2026-08-15 | La Palbox est lisible via `APalPlayerState:GetPalStorage()`, sans ouvrir l'écran | **M2 est débloqué sans le spike de rendu** : le volet lecture/export ne touche pas à l'UI |
 | 2026-08-15 | Aucun header ne mentionne « Mutation » | Le mécanisme 1.0 porte un autre nom interne ou vit en Blueprint → seule piste restante, l'ObjectDump |
 | 2026-08-15 | `FPalBreedingItemEffectData.CombiRankBonus` existe | Le CombiRank est modifiable par objet en 1.0 : une table de rangs figée serait fausse même sans patch |
+| 2026-08-15 (run en jeu) | `GetPalStorage()` rend vide alors que l'instance existe au runtime | La chaîne M2 passe 📘 → ❌. Statut ❌ créé, cascade de 4 voies écrite dans `query.lua`, sonde `F9` ajoutée à `PalKitBox` |
+| 2026-08-15 (run en jeu) | **Deux `BP_PalPlayerState_C` vivants**, un seul porte la Palbox | Suspect n°1 de l'échec ci-dessus. `GetPalPlayerState()` passe devant la propriété moteur `PlayerState` partout dans `query.lua` |
+| 2026-08-15 (run en jeu) | `FindAllOf("WidgetBlueprintGeneratedClass")` rend 0 pour 668 classes réelles | Le palier 2 du spike ne pouvait pas produire de candidat : paliers 3 et 4 jamais atteints. Découverte refondée sur `StaticFindObject(<chemin>)` + classes des instances vivantes |
+| 2026-08-15 (run en jeu) | Les `UserWidget` sous `/Game/….:WidgetTree.X` sont des **modèles de CDO** | Les « 3 204 widgets vivants » étaient trompeurs. Le spike distingue désormais instances (`/Engine/Transient`) et modèles — instancier un modèle n'aurait rien affiché |
+| 2026-08-15 (ObjectDump) | La conversion monde → carte vit bien dans le Blueprint : `WBP_Map_Body_C:CalcMapImagePosition` & co. | Dernier ⬜ structurel de M1 comblé. Reste la seule question du spike : peut-on **afficher** |
+| 2026-08-15 (ObjectDump) | `WBP_Ingame_Compass_C` et ses icônes typées existent | Point d'entrée de M1 plus prometteur que la carte : un HUD déjà fait pour rester à l'écran. Devient la 2ᵉ cible du spike |
+| 2026-08-15 (ObjectDump) | La formule de mutation est **paramétrée** dans `UPalGameSetting` (`Combi_Mutation*`) | Le trou M4 est comblé — et l'affirmation « aucun header ne mentionne Mutation » était fausse : elle venait d'un grep partiel. Voir l'encadré de correction en M4 |

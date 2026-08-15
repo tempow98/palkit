@@ -3,17 +3,23 @@
 Ce document s'adresse à Lucas, qui est le **runtime** du projet : il installe, lance, teste et
 renvoie les logs. Chaque étape est donc explicite jusqu'à la touche à presser.
 
-> **État au 2026-08-15 : rien n'est installé côté Windows.** Tout part donc de la partie 1.
+> **État au 2026-08-15, après ton premier run :** UE4SS est installé et fonctionne (build Dev
+> confirmé — les dumps sont passés), `PalKitBox` et `PalKitSpike` tournent. Les deux ont
+> échoué, tous les deux pour des raisons désormais identifiées et corrigées. **Tu peux sauter
+> les parties 1 et 2** et aller directement au protocole ci-dessous.
 
-## Par quoi commencer
+## Par quoi commencer — 2ᵉ passe
 
-Deux choses sont attendues de ton côté, et elles sont indépendantes :
-
-| Priorité | Quoi | Pourquoi | Nécessite le build Dev ? |
+| Priorité | Quoi | Ce qu'on cherche | Build Dev ? |
 |---|---|---|---|
-| 1 | **Tester `PalKitBox`** (partie 3) | C'est le premier module réel : il exporte ta Palbox en JSON. Il valide d'un coup une trentaine d'entrées de `sdk-notes.md` | **Non** — le build joueur suffit |
-| 2 | **Le dump `CTRL + J`** (partie 2) | Seule source restante pour les Blueprints (`WBP_`, `BP_`) dont M1 a besoin | Oui |
-| 3 | **Le spike `F5`** (partie 3) | Tranche la voie d'affichage de M1 | Oui |
+| 1 | **`F9` dans `PalKitBox`** — nouvelle touche | Laquelle des 4 voies d'accès à la Palbox répond. Une seule suffit à débloquer M2 | **Non** |
+| 2 | **`F7`** juste après | L'export JSON, si `F9` a trouvé une voie | **Non** |
+| 3 | **`F5`** (spike), deux fois : normal, puis **carte du jeu ouverte** | Le palier 3 doit enfin s'exécuter. C'est la question de M1 | Oui |
+
+Le dump `CTRL + J` est **fait** (merci) et dépouillé : il a donné les noms de Blueprints, la
+conversion monde → carte et les paramètres de mutation. Le seul dump encore utile est
+`CTRL + NUM_7` **en extérieur**, pour les acteurs du monde (Pals sauvages, coffres, donjons)
+— et il n'est pas urgent.
 
 Le dump `CTRL + H` (headers) **n'est plus nécessaire** : les mêmes signatures sont publiées
 dans le `PalworldModdingKit`, à jour pour la 1.0, et sont déjà dépouillées dans
@@ -167,8 +173,29 @@ Il n'a besoin **ni du build Dev, ni du spike, ni de la Palbox ouverte à l'écra
 - Lancer, charger un monde (de test de préférence, mais une vraie partie est plus parlante :
   plus il y a de Pals, mieux c'est)
 - En multi / serveur dédié : presser `INS` une fois le monde chargé
+- Presser **`F9`** → **la sonde, à faire en premier** (voir juste en dessous)
 - Presser **`F7`** → export JSON
 - Presser **`F8`** → même lecture, résumé dans le log seulement
+
+#### `F9` — la sonde de diagnostic *(nouveau, à presser avant `F7`)*
+
+Au premier run, `F7` a rendu une seule ligne : `GetPalStorage n'a rien renvoyé`. C'était vrai
+mais inexploitable — ça ne disait pas *pourquoi*. `F9` essaie les **quatre voies d'accès**
+connues à la Palbox et rend compte de chacune, même après qu'une ait réussi.
+
+**Attendu dans `UE4SS.log` :** un bloc `======== Sonde Palbox ========` contenant
+
+1. le PlayerController et le World,
+2. le PlayerState vu par les **deux** voies (`GetPalPlayerState()` et `.PlayerState`) — s'ils
+   diffèrent, un `WARN` le signale, et la cause du bug du 15/08 est trouvée,
+3. les 4 voies, chacune avec son verdict et, si elle rend un objet, un test en profondeur
+   (`GetPageNum`, `GetSlot(0,0)`, jusqu'à lire le `CharacterID` d'un vrai Pal),
+4. une ligne finale `VERDICT : voie retenue -- <nom>`, ou l'échec des quatre.
+
+| Résultat de `F9` | Ce qu'on en fait |
+|---|---|
+| `VERDICT : voie retenue -- …` | M2 est débloqué. `F7` doit produire le JSON dans la foulée |
+| Les 4 voies échouent | Les lignes `DEBUG` du bloc disent, voie par voie, si le membre est **absent**, **non appelable** ou s'il **lève** — trois causes, trois corrections différentes. Renvoie le log, je tranche |
 
 **Attendu dans `UE4SS.log` :** un bloc `======== Export Palbox ========`, une ligne
 `Palbox : N Pals, …`, trois exemples de Pals, puis `export ecrit : <chemin>`.
@@ -192,12 +219,23 @@ que le Lua n'a pas su lire. Vide = toutes les entrées 📘 de `sdk-notes.md` pa
 **Ce qu'on cherche à savoir :** peut-on afficher quelque chose à l'écran en Lua pur, sans
 `.pak` ? Ce mod ne fait rien d'autre. Il sera supprimé une fois la réponse obtenue.
 
+> **Ce qui a changé depuis ton essai du 15/08.** Le palier 2 ne pouvait pas produire de
+> candidat — il n'interrogeait que `FindAllOf("WidgetBlueprintGeneratedClass")`, qui rend
+> `0` sur ce build alors que le jeu en compte 668. Les paliers 3 et 4 étaient donc
+> systématiquement sautés, et la question du spike restait sans réponse. Il vise maintenant
+> des classes **nommées**, tirées de ton ObjectDump : la boussole du jeu d'abord
+> (`WBP_CompassIconBase_C`, puis `WBP_Ingame_Compass_C`), la carte ensuite.
+
 - Copier : `dist\PalKitSpike\` → dossier Mods détecté ; ajouter `PalKitSpike : 1` à `mods.txt`
 - Lancer, charger **un monde de test**
 - Presser **`F5`**
 - Attendu : `UE4SS.log` contient un bloc `======== SPIKE DE RENDU ========` avec les
-  4 paliers. Possiblement un élément d'interface apparaît à l'écran.
+  4 paliers. Le palier 2 doit annoncer `Palier 2 OK (N candidats)` et le palier 3 doit
+  **s'exécuter** (quel que soit son verdict). Possiblement un élément d'interface apparaît.
 - Presser **`F6`** pour retirer ce que F5 a ajouté et pouvoir recommencer.
+- **Recommencer `F5` avec la carte du jeu ouverte** : certains packages d'UI ne sont chargés
+  qu'à la première ouverture de l'écran concerné, et `StaticFindObject` ne trouve que le
+  chargé. Si la voie A annonce des classes `absente (package non charge ?)`, c'est ça.
 - À renvoyer : `UE4SS.log` + capture, **et la réponse à ces deux questions** :
   1. Vois-tu quelque chose de nouveau à l'écran ?
   2. Le jeu répond-il toujours (déplacement, caméra) ?

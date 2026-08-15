@@ -29,13 +29,14 @@ local query = {}
 -- Le Lua d'UE4SS est en 5.4, le luac de controle sur le Pi en 5.1 : les deux noms coexistent.
 local unpackArgs = table.unpack or unpack
 
--- Cache d'objets racines. Volontairement plat : quatre entrees, pas un systeme.
+-- Cache d'objets racines. Volontairement plat : quelques entrees, pas un systeme.
 local cache = {
     helpers    = nil, -- module UEHelpers
     controller = nil,
     pawn       = nil,
     playerState= nil,
     palStorage = nil,
+    palRoute   = nil, -- nom de la voie d'acces Palbox qui a abouti (voir query.palStorage)
 }
 
 --- Vide le cache. A appeler au chargement de monde et apres un echec repete.
@@ -44,25 +45,58 @@ function query.reset()
     cache.pawn        = nil
     cache.playerState = nil
     cache.palStorage  = nil
+    cache.palRoute    = nil
 end
 
 -- ------------------------------------------------------------------ appels proteges
 
---- Appelle une methode d'UObject sous garde.
+--- Appelle une methode d'UObject sous garde, en disant POURQUOI ca echoue.
 -- La reflexion moteur leve des que le nom n'existe plus (cas classique apres un patch) :
 -- on renvoie nil plutot que de laisser remonter.
+--
+-- Le `logger` est optionnel, mais ne pas le passer coute cher : le premier essai en jeu du
+-- 2026-08-15 a rendu "GetPalStorage n'a rien renvoye" sans jamais dire si le membre etait
+-- absent, present-mais-non-appelable, ou levait -- trois causes qui appellent trois
+-- corrections differentes. Les trois sont desormais distinguees, au niveau DEBUG.
 -- @return any|nil
-function query.call(obj, methodName, ...)
-    if obj == nil then return nil end
+local function invoke(logger, obj, methodName, ...)
+    if obj == nil then
+        if logger then logger.debug("%s : appele sur nil", methodName) end
+        return nil
+    end
+
     local args = { ... }
     local argCount = select("#", ...)
-    local ok, result = pcall(function()
-        local fn = obj[methodName]
-        if type(fn) ~= "function" then return nil end
-        return fn(obj, unpackArgs(args, 1, argCount))
-    end)
-    if ok then return result end
-    return nil
+
+    local okIndex, fn = pcall(function() return obj[methodName] end)
+    if not okIndex then
+        if logger then logger.debug("%s : membre inaccessible (%s)", methodName, tostring(fn)) end
+        return nil
+    end
+    if type(fn) ~= "function" then
+        if logger then
+            logger.debug("%s : membre present mais non appelable (type %s)",
+                methodName, type(fn))
+        end
+        return nil
+    end
+
+    local okCall, result = pcall(fn, obj, unpackArgs(args, 1, argCount))
+    if not okCall then
+        if logger then logger.debug("%s a leve : %s", methodName, tostring(result)) end
+        return nil
+    end
+    return result
+end
+
+--- Appel silencieux. Signature historique, conservee pour les appels ou l'echec est attendu.
+function query.call(obj, methodName, ...)
+    return invoke(nil, obj, methodName, ...)
+end
+
+--- Appel trace : identique, mais explique son echec au niveau DEBUG.
+function query.callWhy(logger, obj, methodName, ...)
+    return invoke(logger, obj, methodName, ...)
 end
 
 --- Lit une propriete d'UObject sous garde. Alias lisible de safe.get.
@@ -148,6 +182,17 @@ function query.controller(logger)
     return controller
 end
 
+--- UWorld courant. Sert de WorldContextObject aux UFUNCTION statiques.
+-- UEHelpers expose des fonctions de module (pas de `self`) : appel avec un point.
+function query.world(logger)
+    local ue = helpers(logger)
+    if ue == nil then return nil end
+
+    local ok, world = pcall(function() return ue.GetWorld() end)
+    if not ok or not safe.isValid(world) then return nil end
+    return world
+end
+
 --- Pawn du joueur local (APalPlayerCharacter).
 -- Passe par le controller : pas de parcours d'objets.
 function query.pawn(logger)
@@ -183,15 +228,28 @@ function query.playerLocation(logger)
 end
 
 --- APalPlayerState : porte les donnees persistantes du joueur, dont la Palbox.
--- Source : ModdingKit 62fad41 -- PalPlayerState.h
+--
+-- Deux voies, et l'ordre compte. L'ObjectDump du 2026-08-15 montre DEUX
+-- `BP_PalPlayerState_C` vivants dans le monde solo (`_2147480325` et `_2147480221`), dont un
+-- seul porte une `PalPlayerDataPalStorage`. La propriete moteur `PlayerState` d'AController
+-- n'offre aucune garantie de designer celui-la ; le getter Pal, si -- c'est lui qui sait ce
+-- qu'est un PlayerState *Pal*.
+-- Source : ObjectDump 2026-08-15 + PalPlayerController.h:935 GetPalPlayerState()
 function query.playerState(logger)
     if safe.isValid(cache.playerState) then return cache.playerState end
 
     local controller = query.controller(logger)
     if controller == nil then return nil end
 
-    -- PlayerState est une propriete moteur d'AController, pas une methode Pal.
-    local playerState = safe.get(controller, "PlayerState")
+    -- Voie 1 : le getter Pal dedie.
+    local playerState = query.callWhy(logger, controller, "GetPalPlayerState")
+
+    -- Voie 2 : la propriete moteur d'AController, en repli.
+    if not safe.isValid(playerState) then
+        logger.debug("GetPalPlayerState muet, repli sur la propriete PlayerState")
+        playerState = safe.get(controller, "PlayerState")
+    end
+
     if not safe.isValid(playerState) then
         logger.debug("PlayerState indisponible")
         return nil
@@ -201,24 +259,119 @@ function query.playerState(logger)
     return playerState
 end
 
+-- ------------------------------------------------------------------ Palbox
+
+--- Un storage n'est retenu que s'il repond. Un UObject valide dont aucun membre ne
+-- reagit n'est pas une voie d'acces : c'est un piege qui ferait echouer l'export 200
+-- slots plus loin, sans dire pourquoi.
+-- @return boolean
+local function storageAnswers(logger, storage)
+    if not safe.isValid(storage) then return false end
+
+    local pages = query.call(storage, "GetPageNum")
+    if type(pages) ~= "number" then pages = safe.get(storage, "PageNum") end
+
+    if type(pages) ~= "number" or pages <= 0 then
+        logger.debug("storage ecarte : GetPageNum/PageNum = %s", tostring(pages))
+        return false
+    end
+    return true
+end
+
+--- Voies d'acces a la Palbox, de la plus propre a la plus brutale.
+--
+-- Pourquoi une cascade plutot qu'un chemin unique : le premier essai en jeu (2026-08-15) a
+-- rendu `GetPalStorage n'a rien renvoye` alors que la signature est bonne
+-- (`PalPlayerState.h:573`, UFUNCTION BlueprintPure) et que l'instance existe bien au runtime
+-- (ObjectDump : `...BP_PalPlayerState_C_2147480325.PalPlayerDataPalStorage_2147457951`).
+-- Le nom n'etait donc pas en cause -- la maniere d'y arriver, si. Une cascade nommee survit
+-- a ca, et le log dit laquelle a abouti : c'est ce qui alimente docs/sdk-notes.md.
+local PAL_STORAGE_ROUTES = {
+    {
+        name = "PlayerState:GetPalStorage()",
+        resolve = function(logger)
+            return query.callWhy(logger, query.playerState(logger), "GetPalStorage")
+        end,
+    },
+    {
+        -- UPROPERTY(BlueprintReadWrite, Replicated) -- PalPlayerState.h:180.
+        -- Une propriete se lit souvent la ou l'appel de UFunction resiste.
+        name = "PlayerState.PalStorage (propriete)",
+        resolve = function(logger)
+            return safe.get(query.playerState(logger), "PalStorage")
+        end,
+    },
+    {
+        -- Statique, via le CDO. Contourne entierement le PlayerState -- donc aussi
+        -- l'ambiguite des deux instances.
+        -- Source : PalUtility.h:1182 GetPalStorageDataByPlayerUID
+        name = "PalUtility.GetPalStorageDataByPlayerUID(uid)",
+        resolve = function(logger)
+            local controller = query.controller(logger)
+            if controller == nil then return nil end
+
+            local uid = query.callWhy(logger, controller, "GetPlayerUId")
+            if uid == nil then return nil end
+
+            local ok, cdo = pcall(StaticFindObject, "/Script/Pal.Default__PalUtility")
+            if not ok or not safe.isValid(cdo) then
+                logger.debug("Default__PalUtility introuvable")
+                return nil
+            end
+
+            -- Le WorldContextObject accepte n'importe quel UObject rattache au monde :
+            -- le controller fait un repli parfaitement valable.
+            local world = query.world(logger) or controller
+            return query.callWhy(logger, cdo, "GetPalStorageDataByPlayerUID", world, uid)
+        end,
+    },
+    {
+        -- Filet. Parcours global, donc hors boucle et une seule fois (regle 2 du module) :
+        -- le resultat est mis en cache par query.palStorage.
+        name = "FindAllOf(PalPlayerDataPalStorage)",
+        resolve = function(logger)
+            for _, candidate in ipairs(query.findAll(logger, "PalPlayerDataPalStorage")) do
+                -- Le CDO figure toujours dans le resultat et n'a evidemment aucune page.
+                if not string.find(query.nameOf(candidate), "Default__", 1, true)
+                    and storageAnswers(logger, candidate) then
+                    return candidate
+                end
+            end
+            return nil
+        end,
+    },
+}
+
 --- UPalPlayerDataPalStorage : la Palbox, cote donnees.
 -- C'est le point qui debloque M2 sans toucher a l'interface : les Pals sont lisibles meme
 -- ecran ferme (docs/sdk-notes.md, chaine d'acces).
--- Source : ModdingKit 62fad41 -- PalPlayerState.h:573 GetPalStorage()
+-- @return table|nil storage, string|nil nom de la voie retenue
 function query.palStorage(logger)
-    if safe.isValid(cache.palStorage) then return cache.palStorage end
+    if safe.isValid(cache.palStorage) then return cache.palStorage, cache.palRoute end
 
-    local playerState = query.playerState(logger)
-    if playerState == nil then return nil end
-
-    local storage = query.call(playerState, "GetPalStorage")
-    if not safe.isValid(storage) then
-        logger.error("GetPalStorage n'a rien renvoye -- signature changee depuis la 1.0 ?")
-        return nil
+    for _, route in ipairs(PAL_STORAGE_ROUTES) do
+        local ok, storage = pcall(route.resolve, logger)
+        if not ok then
+            logger.debug("voie %s a leve : %s", route.name, tostring(storage))
+        elseif storageAnswers(logger, storage) then
+            cache.palStorage = storage
+            cache.palRoute   = route.name
+            logger.info("Palbox : voie retenue -- %s", route.name)
+            return storage, route.name
+        else
+            logger.debug("voie %s : sans reponse", route.name)
+        end
     end
 
-    cache.palStorage = storage
-    return storage
+    logger.error("Palbox introuvable : les %d voies d'acces ont echoue. "
+        .. "Presser F9 (sonde) pour le detail voie par voie.", #PAL_STORAGE_ROUTES)
+    return nil, nil
 end
+
+--- Les voies d'acces, exposees pour la sonde de diagnostic (PalKitBox, F9).
+-- La sonde doit pouvoir les essayer TOUTES et rendre compte de chacune, la ou
+-- query.palStorage s'arrete a la premiere qui repond.
+query.palStorageRoutes = PAL_STORAGE_ROUTES
+query.storageAnswers   = storageAnswers
 
 return query

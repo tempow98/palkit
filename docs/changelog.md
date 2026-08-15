@@ -4,6 +4,58 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
 
 ## [Non publié]
 
+### Corrigé — 2026-08-15 — Premier run en jeu : deux échecs, quatre trous comblés
+
+Premier aller-retour manette en main. `PalKitBox` et `PalKitSpike` ont tous les deux échoué,
+et c'est le run le plus productif du projet à ce jour : l'ObjectDump (`CTRL + J`, 574 889
+lignes) déposé dans la foulée a comblé quatre ⬜ que les headers ne pouvaient pas remplir.
+
+**`PalKitBox` — `GetPalStorage n'a rien renvoyé`.** Le nom n'était pas en cause : la
+signature est bonne (`PalPlayerState.h:573`, `UFUNCTION BlueprintPure`) et l'ObjectDump
+montre l'instance bien vivante. Ce qu'il montre aussi, et qui est le vrai suspect : **deux
+`BP_PalPlayerState_C` coexistent en solo**, dont un seul porte la Palbox — or la propriété
+moteur `PlayerState` n'offre aucune garantie de désigner celui-là.
+
+- `shared/query.lua` — `query.palStorage` devient une **cascade de 4 voies nommées**
+  (getter, propriété `PalStorage`, `UPalUtility.GetPalStorageDataByPlayerUID` via le CDO,
+  puis balayage global en filet). La première qui rend un objet *qui répond* gagne, et son
+  nom est journalisé puis reversé dans le JSON (`meta.storageRoute`). `GetPalPlayerState()`
+  passe devant `.PlayerState` partout
+- `shared/query.lua` — `query.callWhy()` : un appel qui **dit pourquoi il échoue** (membre
+  absent / présent mais non appelable / lève). Les deux `return nil` muets de `query.call`
+  sont la raison pour laquelle ce run ne se diagnostiquait pas tout seul
+- `mods/PalKitBox` — **`F9`, sonde de diagnostic** : essaie les 4 voies, compare les deux
+  PlayerState, et pour chaque voie descend jusqu'à lire le `CharacterID` d'un vrai Pal.
+  Un `VERDICT` en fin de bloc
+
+**`PalKitSpike` — paliers 3 et 4 jamais atteints.** Le palier 2 ne pouvait structurellement
+pas produire de candidat : il n'alimentait `candidates` qu'avec
+`FindAllOf("WidgetBlueprintGeneratedClass")`, qui rend **0** sur ce build alors que le jeu
+compte 668 de ces classes — et les milliers de `UserWidget` trouvés juste après étaient
+loggés puis jetés.
+
+- `mods/PalKitSpike` — le palier 2 vise désormais des **classes nommées** issues de
+  l'ObjectDump (`StaticFindObject`), puis retombe sur les classes des instances vivantes.
+  Il distingue instances (`/Engine/Transient`) et **modèles de CDO** (`/Game/….:WidgetTree.X`)
+  — instancier un modèle n'aurait jamais rien affiché. Filtre porté sur le nom de classe
+  court, plus sur le chemin. Inventaire par classe au lieu d'une liste d'instances répétées
+- Première cible du palier 3 : `WBP_CompassIconBase_C`, puis `WBP_Ingame_Compass_C` — **la
+  boussole du jeu est un meilleur point d'entrée pour M1 que la carte** : un HUD déjà fait
+  pour rester à l'écran, peuplé d'icônes typées (Pal, camp, donjon, fast travel)
+
+**Comblé par l'ObjectDump** (détail dans `docs/sdk-notes.md`) : la conversion monde → carte
+(`WBP_Map_Body_C:CalcMapImagePosition` & co., bien en Blueprint comme supposé) ; les widgets
+réels de la Palbox ; la formule de **mutation**, paramétrée dans `UPalGameSetting`
+(`Combi_Mutation*`) — au passage, l'affirmation « aucun header ne mentionne Mutation » était
+**fausse**, elle venait d'un grep partiel, et la correction est consignée.
+
+- `docs/sdk-notes.md` — nouveau statut **❌** (signature confirmée, appel Lua échoué), section
+  « Blueprints observés en jeu », acquis d'environnement du run (UE 5.1, pas de console
+  UE4SS, `FindAllOf` sur les classes de widgets inopérant), 8 entrées de journal
+- `docs/testing.md` — protocole de 2ᵉ passe : `F9` avant `F7`, et `F5` à relancer carte ouverte
+- `scripts/test-shared.lua` — 68 tests (11 de plus) : causes d'échec de `callWhy`, sélection
+  d'un storage qui répond, forme des voies d'accès
+
 ### Ajouté — 2026-08-15 — Passe headers 1.0 et M2 v0
 
 **Le blocage « pas de dumps » est levé pour l'essentiel.** Les headers UHT de Palworld 1.0
