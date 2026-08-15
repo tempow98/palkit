@@ -67,45 +67,108 @@ local cfg = config.new({ modName = MOD_NAME, defaults = DEFAULTS, logger = logge
 -- ------------------------------------------------------------------ lecture d'un Pal
 
 --- Collecteur d'avertissements : un champ illisible est note une fois, pas a chaque Pal.
+-- `note` sert aux constats qui ne sont pas des echecs (quelle API a repondu, par exemple) :
+-- les melanger aux avertissements ferait passer un export sain pour un export degrade.
 local function newWarnings()
-    local seen, list = {}, {}
+    local seen, list, notes = {}, {}, {}
     return {
         add = function(field, detail)
             if seen[field] then return end
             seen[field] = true
             list[#list + 1] = detail and (field .. " : " .. detail) or field
         end,
-        list = list,
+        note = function(message)
+            if seen[message] then return end
+            seen[message] = true
+            notes[#notes + 1] = message
+        end,
+        list  = list,
+        notes = notes,
     }
 end
 
---- Convertit un TArray moteur en table Lua. Renvoie nil si la conversion echoue.
--- UE4SS expose ForEach sur les TArray ; l'element recu est un wrapper dont il faut
--- extraire la valeur avec :get(). Les deux etapes peuvent manquer selon le build, d'ou
--- le double repli.
+--- Convertit un TArray moteur en table Lua.
+--
+-- Quatre API sont tentees dans l'ordre : selon le build UE4SS et le type d'element, l'une
+-- repond et les autres levent. Au run 3, les deux voies precedentes echouaient toutes les
+-- deux sur `PassiveSkillList` et le mod se contentait de dire "TArray non convertible" --
+-- un constat sans piste. Chaque voie porte donc son nom, et l'erreur exacte de la premiere
+-- est conservee : c'est elle qui dira quoi corriger si les quatre echouent.
+-- @return table|nil liste, string|nil voie utilisee, string|nil detail de l'echec
 local function toList(arr)
-    if arr == nil then return nil end
+    if arr == nil then return nil, nil, "champ absent" end
 
-    local out = {}
-    local ok = pcall(function()
-        arr:ForEach(function(_, element)
-            local value = element
-            local gotOk, got = pcall(function() return element:get() end)
-            if gotOk then value = got end
-            out[#out + 1] = query.str(value)
-        end)
-    end)
-    if ok then return out end
-
-    -- Repli : acces indexe classique.
-    out = {}
-    local okLen, len = pcall(function() return #arr end)
-    if not okLen or type(len) ~= "number" then return nil end
-    for i = 1, len do
-        local okItem, item = pcall(function() return arr[i] end)
-        out[#out + 1] = okItem and query.str(item) or nil
+    -- Deballe un element : les TArray rendent souvent un wrapper RemoteUnrealParam.
+    local function unwrap(element)
+        local gotOk, got = pcall(function() return element:get() end)
+        return query.str(gotOk and got or element)
     end
-    return out
+
+    local firstError = nil
+    local function attempt(name, fn)
+        local out = {}
+        local ok, err = pcall(fn, out)
+        if ok and #out > 0 then return out, name end
+        if not ok and firstError == nil then
+            firstError = string.format("%s : %s", name, tostring(err))
+        end
+        -- Une liste vide est un resultat legitime (un Pal sans passif) : on la retient
+        -- si l'appel n'a pas leve, mais on laisse les voies suivantes tenter mieux.
+        if ok then return out, name end
+        return nil
+    end
+
+    local out, via = attempt("ForEach", function(out)
+        arr:ForEach(function(_, element) out[#out + 1] = unwrap(element) end)
+    end)
+    if out then return out, via end
+
+    out, via = attempt("GetArrayNum/GetArrayElement", function(out)
+        for i = 0, arr:GetArrayNum() - 1 do out[#out + 1] = unwrap(arr:GetArrayElement(i)) end
+    end)
+    if out then return out, via end
+
+    out, via = attempt("GetArrayNum/index", function(out)
+        for i = 1, arr:GetArrayNum() do out[#out + 1] = unwrap(arr[i]) end
+    end)
+    if out then return out, via end
+
+    out, via = attempt("#/index", function(out)
+        for i = 1, #arr do out[#out + 1] = unwrap(arr[i]) end
+    end)
+    if out then return out, via end
+
+    return nil, nil, firstError or "aucune des 4 API TArray n'a repondu"
+end
+
+--- Reduit une valeur moteur a un scalaire encodable en JSON.
+--
+-- Necessaire parce que le moteur ne rend pas que des nombres : un FName, un FText ou un
+-- enum arrivent en `userdata`, et le codec JSON -- qui a raison de ne rien deviner --
+-- refuse de les serialiser. Au run 3, 723 Pals avaient ete lus correctement et l'export
+-- entier a ete perdu sur un seul champ de ce genre.
+--
+-- Trois conversions sont tentees, dans l'ordre ou UE4SS les expose : `ToString()` (FName,
+-- FString, FText), `get()` (RemoteUnrealParam), `GetValue()` (enums). Ce qui resiste aux
+-- trois est **abandonne et signale**, jamais converti en "userdata: 0x…" : une valeur
+-- illisible doit se voir dans le rapport, pas s'y deguiser en donnee.
+-- @return number|string|boolean|nil, string|nil  valeur, methode utilisee
+local function scalar(value)
+    local t = type(value)
+    if value == nil or t == "number" or t == "string" or t == "boolean" then
+        return value, nil
+    end
+
+    for _, method in ipairs({ "ToString", "get", "GetValue" }) do
+        local ok, converted = pcall(function() return value[method](value) end)
+        if ok then
+            local ct = type(converted)
+            if ct == "number" or ct == "string" or ct == "boolean" then
+                return converted, method
+            end
+        end
+    end
+    return nil, nil
 end
 
 --- Lit un champ de FPalIndividualCharacterSaveParameter, en notant l'echec eventuel.
@@ -115,7 +178,14 @@ local function readField(saveParam, field, warnings)
         warnings.add(field, "illisible ou absent")
         return nil
     end
-    return value
+
+    local converted = scalar(value)
+    if converted == nil then
+        warnings.add(field, string.format(
+            "type %s non convertible (ni ToString, ni get, ni GetValue)", type(value)))
+        return nil
+    end
+    return converted
 end
 
 --- Extrait un Pal depuis son UPalIndividualCharacterParameter.
@@ -155,11 +225,14 @@ local function readPal(param, warnings)
         craftSpeed = readField(saveParam, "Rank_CraftSpeed", warnings),
     }
 
-    local passives = toList(safe.get(saveParam, "PassiveSkillList"))
+    local passives, via, detail = toList(safe.get(saveParam, "PassiveSkillList"))
     if passives == nil then
-        warnings.add("PassiveSkillList", "TArray non convertible")
+        warnings.add("PassiveSkillList", "TArray non convertible -- " .. tostring(detail))
     else
         pal.passives = passives
+        -- La voie qui a marche est notee une fois : elle vaudra pour tous les TArray du
+        -- jeu (EquipWaza, MasteredWaza, CraftSpeeds...), donc pour tout M2 v1.
+        warnings.note("TArray lus via " .. tostring(via))
     end
 
     -- Controle croise volontaire : le meme niveau, lu une fois en propriete et une fois
@@ -167,7 +240,9 @@ local function readPal(param, warnings)
     -- UPalIndividualCharacterParameter sont appelables depuis le Lua -- et toute la
     -- colonne "Getter" de sdk-notes.md devient exploitable (aptitudes au travail en tete,
     -- ou seul le getter tient compte de la condensation et des passifs).
-    local level = query.call(param, "GetLevel")
+    -- Passe par scalar comme tout le reste : un getter peut rendre un userdata, et c'est
+    -- exactement ce qui a fait perdre l'export complet du run 3.
+    local level = scalar(query.call(param, "GetLevel"))
     if level ~= nil then pal.levelViaGetter = level end
 
     return pal
@@ -260,6 +335,7 @@ local function collect()
     report.meta.emptySlots      = empty
     report.meta.unreadableSlots = unreadable
     report.warnings             = warnings.list
+    report.notes                = warnings.notes
 
     return report
 end
@@ -431,6 +507,42 @@ local function runDiagnostics()
     end)
 end
 
+-- ------------------------------------------------------------------ ecriture
+
+--- Dernier filet avant serialisation : ecarte ce que le JSON ne sait pas encoder.
+--
+-- `scalar` traite deja les champs connus a la lecture ; cette passe couvre ce qui aurait
+-- echappe. La regle du run 3 : **une valeur exotique ne doit jamais coûter l'export
+-- entier** -- 723 Pals correctement lus avaient ete perdus sur un seul champ. Ce qui est
+-- ecarte est nomme par son chemin, donc corrigeable au prochain passage.
+-- @return any nettoye
+local function sanitize(value, path, dropped)
+    local t = type(value)
+    if value == nil or t == "number" or t == "string" or t == "boolean" then
+        return value
+    end
+
+    if t == "table" then
+        local out = {}
+        for key, item in pairs(value) do
+            local keyType = type(key)
+            if keyType == "string" or keyType == "number" then
+                local clean = sanitize(item, path .. "." .. tostring(key), dropped)
+                if clean ~= nil then out[key] = clean end
+            else
+                dropped[#dropped + 1] = path .. " (cle de type " .. keyType .. ")"
+            end
+        end
+        return out
+    end
+
+    local converted = scalar(value)
+    if converted == nil then
+        dropped[#dropped + 1] = string.format("%s (%s)", path, t)
+    end
+    return converted
+end
+
 -- ------------------------------------------------------------------ actions
 
 local writer = nil -- cree paresseusement : inutile tant qu'aucun export n'est demande
@@ -448,10 +560,23 @@ local function runExport()
 
         logSummary(report)
 
+        local dropped = {}
+        local clean = sanitize(report, "report", dropped)
+
+        if #dropped > 0 then
+            logger.always("WARN", "%d valeur(s) non encodable(s) ecartee(s) avant ecriture "
+                .. "-- l'export part quand meme :", #dropped)
+            for index = 1, math.min(#dropped, 10) do
+                logger.always("WARN", "  - %s", dropped[index])
+            end
+            clean.warnings[#clean.warnings + 1] =
+                string.format("%d valeur(s) non encodable(s) ecartee(s), voir le log", #dropped)
+        end
+
         if writer == nil then
             writer = palio.new({ modName = MOD_NAME, logger = logger, prefix = "palbox" })
         end
-        writer.writeJson("export", report)
+        writer.writeJson("export", clean)
 
         logger.always("INFO", "======== Export Palbox : fin ========")
     end)

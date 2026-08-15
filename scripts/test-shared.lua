@@ -217,6 +217,46 @@ check("les voies d'acces Palbox sont exposees et nommees",
       and type(query.palStorageRoutes[1].name) == "string"
       and type(query.palStorageRoutes[1].resolve) == "function")
 
+-- ---------------------------------------------------------------- encodage de valeurs moteur
+-- Le codec JSON refuse -- a raison -- tout ce qui n'est pas un scalaire. Au run 3, un seul
+-- champ userdata a fait perdre un export de 723 Pals deja correctement lus. Ces tests
+-- verifient la regle qui en decoule : ce que le moteur rend d'exotique se convertit, ou
+-- se signale, mais ne coute jamais le fichier entier.
+local function encodable(value)
+    return pcall(json.encode, { v = value })
+end
+
+check("json refuse une valeur exotique", not encodable(coroutine.create(function() end)))
+check("json accepte les scalaires", encodable(42) and encodable("x") and encodable(true))
+
+-- Les trois formes qu'UE4SS rend pour un champ non scalaire, telles que PalKitBox les
+-- convertit : FName/FString (ToString), RemoteUnrealParam (get), enum (GetValue).
+local asFName  = { ToString = function() return "BOSS_IceHorse_Dark" end }
+local asParam  = { get      = function() return 65 end }
+local asEnum   = { GetValue = function() return 2 end }
+local opaque   = { Autre    = function() return {} end }
+
+local function scalarOf(value)
+    -- Reproduit la cascade de PalKitBox.scalar : meme ordre, memes methodes.
+    local t = type(value)
+    if value == nil or t == "number" or t == "string" or t == "boolean" then return value end
+    for _, method in ipairs({ "ToString", "get", "GetValue" }) do
+        local ok, converted = pcall(function() return value[method](value) end)
+        if ok then
+            local ct = type(converted)
+            if ct == "number" or ct == "string" or ct == "boolean" then return converted end
+        end
+    end
+    return nil
+end
+
+check("scalar convertit un FName", scalarOf(asFName) == "BOSS_IceHorse_Dark")
+check("scalar convertit un RemoteUnrealParam", scalarOf(asParam) == 65)
+check("scalar convertit un enum", scalarOf(asEnum) == 2)
+check("scalar laisse passer les scalaires", scalarOf(65) == 65 and scalarOf("x") == "x")
+check("scalar abandonne l'irreductible plutot que de le deguiser", scalarOf(opaque) == nil)
+check("un scalaire converti est encodable", encodable(scalarOf(asFName)))
+
 -- ---------------------------------------------------------------- palio
 local palio = require("palio")
 

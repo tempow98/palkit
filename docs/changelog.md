@@ -4,6 +4,43 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
 
 ## [Non publié]
 
+### Corrigé — 2026-08-15 (run 3) — M2 v0 lit la Palbox : 723 Pals, 0 slot illisible
+
+**La chaîne de lecture tient.** Les quatre voies d'accès répondent et convergent sur la même
+instance ; la voie 1 (`APalPlayerState:GetPalStorage()`), la plus propre, est retenue.
+960 slots parcourus, 723 Pals lus, 237 vides, **aucun illisible**. `GetLevel()` répond aussi,
+donc toute la colonne « Getter » de `sdk-notes.md` devient exploitable — à commencer par
+`GetWorkSuitabilityRanksWithCharacterRank()`, seul à tenir compte de la condensation.
+
+Le spike confirme l'ordre des paliers corrigé (palier 4 après le 3) et `IsInViewport = true`,
+jeu toujours répondant.
+
+**L'export a quand même été perdu**, sur un seul champ : le moteur ne rend pas que des
+nombres — un FName, un FText ou un enum arrivent en `userdata`, et le codec JSON, qui a
+raison de ne rien deviner, refuse de les sérialiser. 723 Pals correctement lus, zéro écrit.
+
+- `mods/PalKitBox` — `scalar()` réduit toute valeur moteur à un scalaire encodable :
+  `ToString()`, puis `get()`, puis `GetValue()`. Ce qui résiste aux trois est **écarté et
+  nommé**, jamais déguisé en `"userdata: 0x…"` — une valeur illisible doit se voir dans le
+  rapport, pas s'y faire passer pour une donnée
+- `mods/PalKitBox` — filet avant écriture : une passe récursive écarte l'inencodable en le
+  nommant par son chemin, et **l'export part quand même**. Perdre 723 Pals sur un champ ne
+  doit pas pouvoir se reproduire
+- `mods/PalKitBox` — `toList` tente **quatre** API `TArray` (`ForEach`,
+  `GetArrayNum`/`GetArrayElement`, `GetArrayNum`/index, `#`/index) et conserve l'erreur exacte
+  de la première. `PassiveSkillList` résistait aux deux voies précédentes, et le mod se
+  contentait d'un « TArray non convertible » sans piste. La voie qui répondra vaudra pour
+  tous les TArray du jeu, donc pour M2 v1
+- `mods/PalKitBox` — `notes` distinct de `warnings` : un constat de fonctionnement ne doit pas
+  faire passer un export sain pour un export dégradé
+- `mods/PalKitSpike` — le palier 4 mesure `IsVisible`, `RenderOpacity` et `DesiredSize` :
+  `IsInViewport` dit seulement qu'un widget est *attaché*, pas qu'il occupe une place. Une
+  taille nulle répond objectivement à « est-ce que ça s'affiche ? »
+- `mods/PalKitSpike` — chaque `F5` avance d'une cible. La boucle utile est « F5, je regarde,
+  F6, F5 » : quatre cibles en une minute, sans éditer de fichier ni quitter le jeu
+- `scripts/test-shared.lua` — 79 tests (8 de plus), sur la cascade de conversion et le refus
+  du codec
+
 ### Corrigé — 2026-08-15 (run 2) — La cause racine était chez nous
 
 **`Create()` + `AddToViewport()` fonctionnent en Lua pur.** Le palier 3 du spike a construit

@@ -62,6 +62,9 @@ grep -rn "GetPalStorage" reference/PalworldModdingKit/Source/Pal/Public/
 |---|---|---|
 | Moteur **UE 5.1** | Les signatures moteur (`K2_GetActorLocation`, etc.) sont celles de 5.1. | PS scan UE4SS |
 | **UE4SS expose les `UFunction` comme des `userdata` appelables**, pas comme des `function` Lua | `type(obj.Methode) == "userdata"`, et pourtant `obj:Methode()` fonctionne. **Ne jamais filtrer sur `type(...) == "function"`** avant d'appeler : c'est le bug qui a fait échouer les runs 1 et 2. Tenter l'appel sous `pcall` est le seul test valable. | run 2, 2026-08-15 |
+| **Les valeurs de retour aussi sont des `userdata`** (FName, FText, enums) | Elles ne sont pas sérialisables telles quelles — un seul champ de ce type a fait perdre un export de 723 Pals déjà lus. Conversion, dans cet ordre : `ToString()` (FName/FString/FText), `get()` (RemoteUnrealParam), `GetValue()` (enums). Ce qui résiste aux trois est **écarté et nommé**, jamais transformé en `"userdata: 0x…"`. | run 3, 2026-08-15 |
+| Les **`UFUNCTION static`** sont appelables via leur CDO | `StaticFindObject("/Script/Pal.Default__PalUtility")` puis appel normal. Un `FGuid` passe en paramètre sans conversion. Ouvre `UPalUtility`, `UPalBreedingUtility` et la famille `UPalMasterDataTableAccess_*` — donc M4. | run 3, 2026-08-15 |
+| La conversion **`TArray` → table Lua résiste** | Ni `ForEach` ni l'accès indexé n'ont répondu sur `PassiveSkillList`. C'est le dernier verrou de M2 v1 : tout ce qui est liste (passifs, `EquipWaza`, `CraftSpeeds`) en dépend. Quatre API sont tentées, l'erreur de la première est conservée. | run 3, 2026-08-15 |
 | Le logger PalKit **dédoublonne sur la chaîne de format** (fenêtre 60 s) | Un message paramétré émis pour dix méthodes différentes n'apparaît **qu'une fois**. Dans un diagnostic, utiliser `always(niveau, …)`, qui ne dédoublonne pas — sinon la cause racine reste invisible. | run 2, 2026-08-15 |
 | `ExecuteInGameThread` est **asynchrone** | Ce qui suit l'appel s'exécute *avant* le callback. Au run 2, le palier 4 du spike a conclu « aucun widget affiché » 8 ms avant que le widget soit créé. Tout ce qui dépend du résultat doit être enchaîné **dans** la continuation. | run 2, 2026-08-15 |
 | `ConsoleManagerSingleton` **introuvable** (2 valeurs candidates) | **Pas de console UE4SS** sur ce build : aucun repli par commande console, tout passe par le Lua. | `UE4SS.log` au démarrage |
@@ -99,7 +102,7 @@ grep -rn "GetPalStorage" reference/PalworldModdingKit/Source/Pal/Public/
 | Cible | Statut | Nom exact | Source | Date |
 |---|---|---|---|---|
 | Voie d'affichage en Lua pur — **API** | ✅ | **`UWidgetBlueprintLibrary::Create(world, class, controller)` puis `AddToViewport(0)` fonctionnent.** Widget construit sous la GameInstance (`…BP_PalGameInstance_C_2147482476.WBP_CompassIconBase_C_2147419588`), `AddToViewport` sans erreur. Le CDO se prend par `StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")` | log F5 run 2 | 2026-08-15 |
-| Voie d'affichage en Lua pur — **visibilité à l'écran** | ⬜ | l'API répond, reste à confirmer qu'un widget est **visible**. Une icône seule (`WBP_CompassIconBase_C`) est probablement vide sans données : à réessayer sur un widget autoporteur | — | |
+| Voie d'affichage en Lua pur — **visibilité à l'écran** | ⬜ | Confirmé au run 3 : `IsInViewport = true`, jeu toujours répondant, curseur non capturé. Reste à établir qu'un widget est **visible** — le spike mesure désormais `IsVisible`, `RenderOpacity` et `DesiredSize` (une taille nulle = attaché mais sans place), et change de cible à chaque `F5` | log F5 run 3 | 2026-08-15 |
 | Texture de world map | 📘 | `APalWorldMapCapture` : props `worldMapTexture` (UTexture2D), `worldMapHeightTexture`, et `GetRenderedWorldMapTexture()` | ModdingKit 62fad41 — `PalWorldMapCapture.h` | 2026-08-15 |
 | Widget de carte du jeu | 📘 | `UPalUIWorldMap` : `UPalUserWidgetOverlayUI` ; `CreateWorldMapData(EPalWorldMapType)`, `AddWorldMapIcon()`, `RemoveWorldMapIcon()`, `GetNearestIconWidget()` | ModdingKit 62fad41 — `PalUIWorldMap.h` | 2026-08-15 |
 | Widget d'icône de carte | 📘 | `UPalUIWorldMapIcon` | ModdingKit 62fad41 — `PalUIWorldMapIcon.h` | 2026-08-15 |
@@ -201,12 +204,16 @@ ordre, et **diagnosticables une par une** avec `F9` de `PalKitBox`. La première
 objet *qui répond* (`GetPageNum` ou `PageNum` > 0) gagne, et son nom est journalisé — c'est
 lui qui fera passer la ligne en ✅.
 
-| # | Voie | Statut | Résultat au run 2 (avant correction du garde d'appel) | Source |
+| # | Voie | Statut | Résultat au run 3 (garde d'appel corrigé) | Source |
 |---|---|---|---|---|
-| 1 | `APalPlayerState:GetPalStorage()` | 🟡 | Rendait vide — comme **tout** appel de méthode à ce stade. **À revalider au run 3** : c'est la voie la plus propre, et plus rien ne s'oppose à ce qu'elle passe | `PalPlayerState.h:573` |
-| 2 | `APalPlayerState.PalStorage` (propriété) | ✅ | **Voie retenue au run 2.** A rendu `…BP_PalPlayerState_C_2147480314.PalPlayerDataPalStorage_2147458069`, `PageNum = 32`, `SlotNumInPage = 30` — cohérent avec la 1.0. Une propriété se lit là où un appel échoue | `PalPlayerState.h:180` |
-| 3 | `UPalUtility.GetPalStorageDataByPlayerUID(world, uid)` | 🟡 | Rien rendu, mais elle dépend de `GetPlayerUId()` — donc du même garde. À revalider | `PalUtility.h:1182` + ObjectDump |
-| 4 | `FindAllOf("PalPlayerDataPalStorage")` | ✅ | A trouvé **le même objet** que la voie 2, en écartant le CDO. Filet fonctionnel, mais parcours global : hors boucle et une seule fois | ObjectDump |
+| 1 | `APalPlayerState:GetPalStorage()` | ✅ | **Voie retenue.** La plus propre, et elle passe : `PageNum = 32`, `SlotNumInPage = 30`, `GetSlot(0,0)` rend un slot | `PalPlayerState.h:573` |
+| 2 | `APalPlayerState.PalStorage` (propriété) | ✅ | Rend le même objet. Utile comme repli : une propriété se lit là où un appel échoue | `PalPlayerState.h:180` |
+| 3 | `UPalUtility.GetPalStorageDataByPlayerUID(world, uid)` | ✅ | Fonctionne, **CDO statique compris** (`/Script/Pal.Default__PalUtility`) : preuve qu'on peut appeler les `UFUNCTION static` du jeu, et que `FGuid` passe en paramètre | `PalUtility.h:1182` |
+| 4 | `FindAllOf("PalPlayerDataPalStorage")` | ✅ | Même objet, CDO écarté. Filet fonctionnel, mais parcours global : hors boucle et une seule fois | ObjectDump |
+
+> Les quatre voies convergent sur la même instance. La voie 3 est celle qui **généralise le
+> plus** : appeler une fonction statique par son CDO ouvre tout `UPalUtility`, `UPalBreedingUtility`
+> et la famille `UPalMasterDataTableAccess_*` — donc M4.
 
 > En amont des voies 1 et 2, le PlayerState se résout par
 > `APalPlayerController:GetPalPlayerState()` (📘 `PalPlayerController.h:935`) **avant** la
@@ -242,14 +249,18 @@ de condensation et des passifs, ce que la propriété brute ne reflète pas.
 Tout vient de `ModdingKit 62fad41` — `PalIndividualCharacterSaveParameter.h` et
 `PalIndividualCharacterParameter.h`, 2026-08-15.
 
+> ✅ **Chaîne validée en jeu au run 3** : 723 Pals lus sur 960 slots (237 vides, **0
+> illisible**), en une passe et sans ouvrir l'écran. Les statuts ci-dessous marqués ✅ ont été
+> effectivement lus ; la source est `run 3, 2026-08-15`.
+
 | Champ | Statut | Propriété `SaveParameter` | Getter |
 |---|---|---|---|
-| Espèce | 📘 | `CharacterID` (FName) | `GetCharacterID()` |
-| Surnom | 📘 | `NickName`, `FilteredNickName` (FString) | `GetNickNameWithOnlineID(out)` / `GetNickNameByCheckBlockedUser(out)` |
+| Espèce | ✅ | `CharacterID` (FName → `ToString()`), ex. `BOSS_IceHorse_Dark` | `GetCharacterID()` |
+| Surnom | ✅ | `NickName` (vide sur les Pals non renommés), `FilteredNickName` | `GetNickNameWithOnlineID(out)` / `GetNickNameByCheckBlockedUser(out)` |
 | Genre | 📘 | `Gender` (`EPalGenderType`) | `GetGenderType()` |
-| Niveau | 📘 | `Level` (uint8), `Exp` (int64) | `GetLevel()`, `IsLevelMax()` |
+| Niveau | ✅ | `Level` (uint8), `Exp` (int64) | `GetLevel()` ✅ **appelable** — les getters de `UPalIndividualCharacterParameter` sont donc exploitables, `GetWorkSuitabilityRanksWithCharacterRank()` en tête |
 | IVs | 📘 | `Talent_HP`, `Talent_Melee`, `Talent_Shot`, `Talent_Defense` (uint8) | — |
-| Passifs | 📘 | `PassiveSkillList` (TArray\<FName\>) | `GetPassiveSkillList()` |
+| Passifs | ⬜ | `PassiveSkillList` (TArray\<FName\>) — **la conversion TArray résiste** : ni `ForEach` ni l'accès indexé n'ont répondu au run 3. Quatre API sont désormais tentées, avec l'erreur exacte de la première conservée | `GetPassiveSkillList()` |
 | Compétences actives | 📘 | `EquipWaza`, `MasteredWaza` (TArray\<`EPalWazaID`\>) | — |
 | Aptitudes au travail | 📘 | `CraftSpeeds` (TArray\<`FPalWorkSuitabilityInfo`\>) | `GetWorkSuitabilityRanksWithCharacterRank()` ⬅️ **à préférer** |
 | Âme (soul upgrades) | 📘 | `Rank_HP`, `Rank_Attack`, `Rank_Defence`, `Rank_CraftSpeed` (uint8) | — |
@@ -428,3 +439,7 @@ sauvegarde, pas à nous.
 | 2026-08-15 (run 2) | Un storage peut annoncer ses dimensions **sans qu'aucun slot ne réponde** | `PageNum`/`SlotNumInPage` sont des propriétés répliquées. `storageAnswers` exige désormais un `GetSlot(0,0)` valide — sinon l'export sort « 0 Pal » en se déclarant satisfait |
 | 2026-08-15 (run 2) | **`Create()` + `AddToViewport()` fonctionnent en Lua pur** | La question centrale de M1 est tranchée côté API : pas besoin de `.pak` pour instancier un widget du jeu. Reste la visibilité à l'écran |
 | 2026-08-15 (run 2) | `ExecuteInGameThread` est asynchrone : le palier 4 jugeait 8 ms trop tôt | Tout ce qui dépend d'un résultat du game thread s'enchaîne désormais dans la continuation |
+| 2026-08-15 (run 3) | **La Palbox est entièrement lue : 723 Pals, 0 slot illisible** | M2 v0 est atteint. Les 4 voies d'accès répondent, la voie 1 (la plus propre) est retenue. Les getters de `UPalIndividualCharacterParameter` sont appelables → toute la colonne « Getter » devient exploitable |
+| 2026-08-15 (run 3) | Les **valeurs de retour** sont des `userdata` (FName, enums), pas seulement les fonctions | Un seul champ de ce type a fait perdre l'export complet de 723 Pals déjà lus. Cascade de conversion `ToString`/`get`/`GetValue` au point de lecture, **plus** un filet avant écriture : une valeur exotique ne doit jamais coûter le fichier entier |
+| 2026-08-15 (run 3) | Les **`UFUNCTION static` passent par le CDO** (`Default__PalUtility`), `FGuid` compris | Débloque `UPalUtility`, `UPalBreedingUtility` et les `UPalMasterDataTableAccess_*` : c'est la voie d'accès aux data tables, donc à M4 |
+| 2026-08-15 (run 3) | **La conversion `TArray` → Lua résiste** (`PassiveSkillList`) | Dernier verrou de M2 v1 : passifs, `EquipWaza`, `CraftSpeeds` en dépendent tous. 4 API tentées, erreur exacte conservée pour trancher au prochain run |

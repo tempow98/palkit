@@ -3,24 +3,32 @@
 Ce document s'adresse à Lucas, qui est le **runtime** du projet : il installe, lance, teste et
 renvoie les logs. Chaque étape est donc explicite jusqu'à la touche à presser.
 
-> **État au 2026-08-15, après ton 2ᵉ run.** Deux acquis majeurs : `Create()` +
-> `AddToViewport()` **fonctionnent** en Lua pur (la question de M1 est tranchée côté API), et
-> la Palbox **est atteinte** (32 pages × 30 slots). Il restait un bug, un seul, qui expliquait
-> tous les appels muets — il était dans PalKit, pas dans le jeu : on refusait d'appeler les
-> méthodes du jeu parce qu'UE4SS les expose comme des `userdata` et non des `function`.
-> Corrigé. **Tu peux sauter les parties 1 et 2.**
+> **État au 2026-08-15, après ton 3ᵉ run — la lecture de la Palbox marche.** 960 slots
+> parcourus, **723 Pals lus, 0 illisible**. Les quatre voies d'accès répondent. Le spike
+> instancie un widget et l'attache au viewport sans perturber le jeu. Il restait un défaut :
+> l'export JSON était perdu sur un seul champ exotique (un `userdata` que le codec refuse) —
+> corrigé, et doublé d'un filet pour que ça ne puisse plus coûter le fichier entier.
+> **Tu peux sauter les parties 1 et 2.**
 
-## Par quoi commencer — 3ᵉ passe
+## Par quoi commencer — 4ᵉ passe
 
 | Priorité | Quoi | Ce qu'on cherche | Build Dev ? |
 |---|---|---|---|
-| 1 | **`F11` dans `PalKitBox`** (la sonde a changé de touche, voir plus bas) | Les 4 voies doivent maintenant répondre, et `GetSlot(0,0)` sortir un slot | **Non** |
-| 2 | **`F7`** juste après | L'export JSON, avec de vrais Pals cette fois | **Non** |
-| 3 | **`F5`** (spike) | Le palier 4 doit enfin s'exécuter **après** le palier 3, et conclure sur un vrai état | Oui |
+| 1 | **`F7`** dans `PalKitBox` | **Le fichier JSON doit sortir cette fois.** C'est le livrable de M2 v0 | **Non** |
+| 2 | **`F5`** (spike), **quatre fois**, avec `F6` entre chaque | Chaque `F5` essaie une cible différente. On cherche celle qui se **voit** | Oui |
+| 3 | `F11` seulement si `F7` échoue | Le diagnostic voie par voie | **Non** |
 
-⚠️ **La sonde passe de `F9` à `F11`.** Ton `PalKitDump` occupe F9 (dump d'objets) et F10
-(acteurs) : au 2ᵉ run, presser F9 déclenchait un dump de 127 Mo **et** la sonde, dans cet
-ordre. Rien de cassé, mais 1 seconde de gel à chaque diagnostic.
+**Ce que j'attends de ce run**, dans l'ordre d'importance :
+
+1. **Le fichier `palbox-export-*.json`** (à côté du mod). C'est le vrai livrable : 723 Pals
+   avec espèce, niveau, IVs, rang, âmes.
+2. La ligne `PassiveSkillList` du log : elle dira **laquelle des quatre API `TArray`** répond.
+   C'est le dernier verrou de M2 v1 — passifs, compétences et aptitudes en dépendent tous.
+3. Pour le spike : à chaque `F5`, la ligne `DesiredSize`. Si elle affiche `0x0`, le widget est
+   attaché mais n'occupe aucune place — inutile de scruter l'écran, passe à la cible suivante.
+
+⚠️ **La sonde est sur `F11`**, pas F9 : ton `PalKitDump` occupe F9 (dump d'objets) et F10
+(acteurs), et presser F9 déclenchait un dump de 127 Mo **avant** la sonde.
 
 Le dump `CTRL + J` est **fait** (merci) et dépouillé : il a donné les noms de Blueprints, la
 conversion monde → carte et les paramètres de mutation. Le seul dump encore utile est
@@ -241,7 +249,9 @@ que le Lua n'a pas su lire. Vide = toutes les entrées 📘 de `sdk-notes.md` pa
 
 - Copier : `dist\PalKitSpike\` → dossier Mods détecté ; ajouter `PalKitSpike : 1` à `mods.txt`
 - Lancer, charger **un monde de test**
-- Presser **`F5`**
+- Presser **`F5`**, regarder l'écran, presser **`F6`**, puis **`F5`** à nouveau : chaque
+  pression essaie **la cible suivante** (le log annonce `Cible N/12`). Quatre passes suffisent
+  à couvrir les cibles nommées — icône de boussole, boussole complète, corps de carte, carte
 - Attendu : `UE4SS.log` contient un bloc `======== SPIKE DE RENDU ========` avec les
   4 paliers. Le palier 2 doit annoncer `Palier 2 OK (N candidats)` et le palier 3 doit
   **s'exécuter** (quel que soit son verdict). Possiblement un élément d'interface apparaît.

@@ -41,6 +41,7 @@ local logger = log.new("Spike")
 local state = {
     createdWidget = nil,
     candidates    = {},
+    attempt       = 0, -- nombre de F5 : sert a changer de cible a chaque essai
 }
 
 -- ------------------------------------------------------------------ configuration
@@ -298,11 +299,19 @@ local function stage3_instantiate(ctx, onDone)
     end
 
     -- Les candidats sont ordonnes par le palier 2 : les classes nommees de l'ObjectDump
-    -- d'abord (du plus leger au plus lourd), les trouvailles dynamiques ensuite. Prendre
-    -- le premier n'est donc plus un choix arbitraire -- mais on dit lequel, et pourquoi.
-    local target = state.candidates[1]
-    logger.always("INFO", "Cible retenue : %s (origine : %s, sur %d candidats)",
-        target.name, tostring(target.origin), #state.candidates)
+    -- d'abord (du plus leger au plus lourd), les trouvailles dynamiques ensuite.
+    --
+    -- Chaque pression de F5 avance d'une cible. Lucas est le runtime : lui demander
+    -- d'editer un settings.json entre deux essais couterait un aller-retour par cible,
+    -- alors que la boucle utile est "F5, je regarde, F6, F5" -- quatre cibles en une
+    -- minute, sans quitter le jeu.
+    local index = (state.attempt % #state.candidates) + 1
+    state.attempt = state.attempt + 1
+
+    local target = state.candidates[index]
+    logger.always("INFO", "Cible %d/%d : %s (origine : %s)",
+        index, #state.candidates, target.name, tostring(target.origin))
+    logger.always("INFO", "F6 puis F5 pour essayer la cible suivante.")
 
     -- Le corps est isole pour que ses `return` precoces n'empechent jamais l'appel de
     -- onDone : quelle que soit la branche prise, le palier 4 doit suivre.
@@ -382,9 +391,35 @@ local function stage4_sideEffects(ctx)
         return
     end
 
+    local widget = state.createdWidget
+
     local _, inViewport = safe.call(logger, "IsInViewport",
-        function() return state.createdWidget:IsInViewport() end)
+        function() return widget:IsInViewport() end)
     logger.always("INFO", "IsInViewport      : %s", tostring(inViewport))
+
+    -- Mesures d'affichage. `IsInViewport` dit seulement que le widget est attache : il peut
+    -- l'etre en etant invisible, transparent, ou de taille nulle. Ces trois lignes
+    -- repondent objectivement a "est-ce que ca s'affiche ?", sans dependre de l'oeil.
+    local _, visible = safe.call(logger, "IsVisible", function() return widget:IsVisible() end)
+    logger.always("INFO", "IsVisible         : %s", tostring(visible))
+
+    local _, opacity = safe.call(logger, "GetRenderOpacity",
+        function() return widget:GetRenderOpacity() end)
+    logger.always("INFO", "RenderOpacity     : %s", tostring(opacity))
+
+    local _, size = safe.call(logger, "GetDesiredSize",
+        function() return widget:GetDesiredSize() end)
+    if size ~= nil then
+        local okDims, x, y = pcall(function() return size.X, size.Y end)
+        if okDims then
+            logger.always("INFO", "DesiredSize       : %sx%s", tostring(x), tostring(y))
+            if (tonumber(x) or 0) == 0 or (tonumber(y) or 0) == 0 then
+                logger.always("WARN", "Taille nulle : le widget est attache mais n'occupe "
+                    .. "aucune place. Attendu pour une icone sans donnees -- c'est le "
+                    .. "moment d'essayer la cible suivante.")
+            end
+        end
+    end
 
     local showMouse = safe.get(ctx.controller, "bShowMouseCursor")
     logger.always("INFO", "bShowMouseCursor  : %s", tostring(showMouse))
