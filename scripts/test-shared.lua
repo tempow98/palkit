@@ -227,6 +227,16 @@ local function encodable(value)
 end
 
 check("json refuse une valeur exotique", not encodable(coroutine.create(function() end)))
+
+-- Une table vide est ambiguë en Lua : `json.array` lève l'ambiguïté, sinon un champ
+-- « liste » change de type selon qu'il est vide ou non.
+check("table vide -> objet par defaut", json.encode({ w = {} }, false) == '{"w":{}}',
+      json.encode({ w = {} }, false))
+check("table vide marquee -> liste", json.encode({ w = json.array({}) }, false) == '{"w":[]}',
+      json.encode({ w = json.array({}) }, false))
+check("json.array rend la table", (function() local t = {} return json.array(t) == t end)())
+check("marquer ne casse pas une liste pleine",
+      json.encode({ w = json.array({ 1, 2 }) }, false) == '{"w":[1,2]}')
 check("json accepte les scalaires", encodable(42) and encodable("x") and encodable(true))
 
 -- Les trois formes qu'UE4SS rend pour un champ non scalaire, telles que PalKitBox les

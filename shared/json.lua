@@ -48,8 +48,22 @@ local function encodeNumber(n)
 end
 
 --- Un tableau est une table dont les cles sont exactement 1..n.
--- Distinction indispensable : une table vide est ambigue en Lua, on la serialise en objet
--- (`{}`), ce qui est le bon defaut pour une config.
+-- Une table vide reste serialisee en objet (`{}`) par defaut -- le bon choix pour une
+-- config -- sauf si elle a ete marquee par `json.array()`.
+--
+-- Tables explicitement marquees comme listes. En Lua, une table vide est ambigue : rien ne
+-- distingue une liste sans element d'un objet sans cle, et le codec sortait donc `{}` pour
+-- une liste d'avertissements vide -- un piege pour qui lit le JSON, puisque le champ change
+-- de type selon qu'il y a des avertissements ou non (constate sur l'export du run 6).
+-- Table faible : marquer une liste ne doit pas l'empecher d'etre collectee.
+local arrays = setmetatable({}, { __mode = "k" })
+
+--- Marque une table comme liste, meme vide. Renvoie la table, pour pouvoir enchainer.
+function json.array(t)
+    if type(t) == "table" then arrays[t] = true end
+    return t
+end
+
 local function isArray(t)
     local count = 0
     for k in pairs(t) do
@@ -60,7 +74,8 @@ local function isArray(t)
     for i = 1, count do
         if t[i] == nil then return false, 0 end
     end
-    return count > 0, count
+    if count == 0 then return arrays[t] == true, 0 end
+    return true, count
 end
 
 local encodeValue

@@ -47,6 +47,7 @@ local safe   = require("safe")
 local config = require("config")
 local query  = require("query")
 local palio  = require("palio")
+local json   = require("json") -- pour json.array : marquer les listes vides comme listes
 
 local MOD_NAME = "PalKitBox"
 local VERSION  = "0.1.0"
@@ -379,8 +380,11 @@ local function collect()
         report.meta.partialPals      = partial
         report.meta.emptySlots       = empty
         report.meta.unreadableSlots  = unreadable
-        report.warnings              = warnings.list
-        report.notes                 = warnings.notes
+        -- Marquees comme listes : sans ca, un export sans avertissement sort `"warnings": {}`
+        -- et un export degrade `"warnings": [...]`. Un champ qui change de type selon son
+        -- contenu est un piege pour qui lit le fichier.
+        report.warnings              = json.array(warnings.list)
+        report.notes                 = json.array(warnings.notes)
         report.fieldFailures         = warnings.counts
         onDone(report)
     end

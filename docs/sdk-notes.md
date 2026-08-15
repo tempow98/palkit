@@ -104,8 +104,14 @@ grep -rn "GetPalStorage" reference/PalworldModdingKit/Source/Pal/Public/
 
 | Cible | Statut | Nom exact | Source | Date |
 |---|---|---|---|---|
-| Voie d'affichage en Lua pur — **API** | ✅ | **`UWidgetBlueprintLibrary::Create(world, class, controller)` puis `AddToViewport(0)` fonctionnent.** Widget construit sous la GameInstance (`…BP_PalGameInstance_C_2147482476.WBP_CompassIconBase_C_2147419588`), `AddToViewport` sans erreur. Le CDO se prend par `StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")` | log F5 run 2 | 2026-08-15 |
-| Voie d'affichage en Lua pur — **visibilité à l'écran** | ⬜ | Confirmé au run 3 : `IsInViewport = true`, jeu toujours répondant, curseur non capturé. Reste à établir qu'un widget est **visible** — le spike mesure désormais `IsVisible`, `RenderOpacity` et `DesiredSize` (une taille nulle = attaché mais sans place), et change de cible à chaque `F5` | log F5 run 3 | 2026-08-15 |
+| Voie d'affichage en Lua pur — **API** | ✅ | **`UWidgetBlueprintLibrary::Create(world, class, controller)` puis `AddToViewport(0)` fonctionnent.** Widget construit sous la GameInstance. Le CDO se prend par `StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")` | log F5 run 2 | 2026-08-15 |
+| Voie d'affichage en Lua pur — **occupation réelle de l'écran** | ✅ | **PROUVÉE.** `WBP_Ingame_Compass_C` → `IsVisible = true`, `RenderOpacity = 1.0`, **`DesiredSize = 800 × 122`**. `WBP_Map_Body_C` → **`155,75 × 332,75`**. Le jeu reste jouable, le curseur n'est pas capturé. **M1 n'a pas besoin de `.pak`** | log F5 run 6 | 2026-08-15 |
+| Widgets qui **ne** s'affichent pas seuls | 📘 | `WBP_CompassIconBase_C` reste à `0 × 0` et `IsVisible = false` : une icône attend des données que `Create()` ne fournit pas. Viser les widgets **autoporteurs** (`WBP_Ingame_Compass_C`, `WBP_Map_Body_C`), pas leurs briques | log F5 run 6 | 2026-08-15 |
+
+> ⚠️ **Mesurer 500 ms après l'`AddToViewport`, jamais dans la même frame.** Au run 4, les
+> cinq cibles rendaient `0 × 0` — y compris la carte entière — parce que Slate n'avait pas
+> encore fait sa passe de layout. Avec le délai, deux des trois cibles donnent une taille
+> réelle. La mesure prématurée avait failli faire conclure à un échec de M1.
 | Texture de world map | 📘 | `APalWorldMapCapture` : props `worldMapTexture` (UTexture2D), `worldMapHeightTexture`, et `GetRenderedWorldMapTexture()` | ModdingKit 62fad41 — `PalWorldMapCapture.h` | 2026-08-15 |
 | Widget de carte du jeu | 📘 | `UPalUIWorldMap` : `UPalUserWidgetOverlayUI` ; `CreateWorldMapData(EPalWorldMapType)`, `AddWorldMapIcon()`, `RemoveWorldMapIcon()`, `GetNearestIconWidget()` | ModdingKit 62fad41 — `PalUIWorldMap.h` | 2026-08-15 |
 | Widget d'icône de carte | 📘 | `UPalUIWorldMapIcon` | ModdingKit 62fad41 — `PalUIWorldMapIcon.h` | 2026-08-15 |
@@ -268,6 +274,14 @@ Tout vient de `ModdingKit 62fad41` — `PalIndividualCharacterSaveParameter.h` e
 > client/serveur local. Le résumé du run 3 (« 723 Pals ») était faux pour la même raison : il
 > comptait un Pal dès qu'un slot était occupé, sans vérifier qu'un champ en sortait.
 >
+> ✅ **RÉSOLU AU RUN 6 : 743 Pals lus, 0 coquille, 0 avertissement, 32 pages en 8,2 s.**
+> La boucle `RequestPalBoxSyncPage_ToServer` fonctionne exactement comme prévu, et la page de
+> synchronisation d'origine (`-1`, c'est-à-dire aucune) est bien restaurée. Données
+> cohérentes : 310 espèces, niveaux 1→80, IVs 0→100, 674 Pals sur 743 portent au moins un
+> passif, 5 rares. **M2 v0 est terminé.**
+>
+> _Historique du diagnostic, conservé parce qu'il resservira au prochain conteneur paginé :_
+>
 > ❌ **Les deux contournements en lecture seule ont échoué (run 5).** `TargetContainer` rend
 > bien **960 slots sur 960** — l'*accès* n'a jamais été le problème — mais les données
 > restent absentes : toujours 30 Pals, 697 coquilles, une seule page.
@@ -289,7 +303,7 @@ Tout vient de `ModdingKit 62fad41` — `PalIndividualCharacterSaveParameter.h` e
 |---|---|---|---|
 | Espèce | ✅ | `CharacterID` (FName → `ToString()`), ex. `BOSS_IceHorse_Dark` | `GetCharacterID()` |
 | Surnom | ✅ | `NickName` (vide sur les Pals non renommés), `FilteredNickName` | `GetNickNameWithOnlineID(out)` / `GetNickNameByCheckBlockedUser(out)` |
-| Genre | 📘 | `Gender` (`EPalGenderType`) | `GetGenderType()` |
+| Genre | ✅ | `Gender` (`EPalGenderType`), rendu comme **entier** : `0 = None`, `1 = Male`, `2 = Female` (`EPalGenderType.h`). Observé : 386 mâles, 346 femelles, 11 sans genre | `GetGenderType()` |
 | Niveau | ✅ | `Level` (uint8), `Exp` (int64) | `GetLevel()` ✅ **appelable** — les getters de `UPalIndividualCharacterParameter` sont donc exploitables, `GetWorkSuitabilityRanksWithCharacterRank()` en tête |
 | IVs | 📘 | `Talent_HP`, `Talent_Melee`, `Talent_Shot`, `Talent_Defense` (uint8) | — |
 | Passifs | ✅ | `PassiveSkillList` (TArray\<FName\>) — lu **via `ForEach`**, élément déballé par `:get()`. Ex. `Legend`, `ElementBoost_Dark_2_PAL`, `PAL_Sanity_Up_2` | `GetPassiveSkillList()` — désormais tenté **avant** la propriété : le TArray d'un struct n'a pas toujours d'UObject propriétaire |
@@ -480,3 +494,6 @@ sauvegarde, pas à nous.
 | 2026-08-15 (run 4) | `GetDesiredSize()` mesuré dans la frame de l'ajout vaut toujours `0×0` | La mesure du spike était prise avant la passe de layout de Slate — verdict sans valeur sur les 5 cibles. Différée de 500 ms |
 | 2026-08-15 (run 5) | **Le comptage honnête confirme le verrou** : 30 lus / 697 coquilles, 1 page sur 32 | Le rapport dit enfin ce qu'il lit. `TargetContainer` rend 960/960 slots : l'accès n'était pas le problème, la réplication l'est |
 | 2026-08-15 (run 5) | **`RequestPalBoxSyncPage_ToServer` existe** (`PalPlayerState.h:338`, Reliable/Server) | La fonction que l'UI utilise pour tourner les pages. Seule voie vers un export complet ; sort du read-only strict, **arbitré avec Lucas** ; page d'origine restaurée, désactivable par `syncPages` |
+| 2026-08-15 (run 6) | **M2 v0 TERMINÉ : 743 Pals, 0 coquille, 0 avertissement** | 32 pages en 8,2 s, page de synchro restaurée. 310 espèces, IVs, passifs, âmes, rang, genre : tout sort. M2 v1 (recherche/tri) peut démarrer |
+| 2026-08-15 (run 6) | **M1 DÉBLOQUÉ : un widget du jeu occupe une place réelle à l'écran en Lua pur** | `WBP_Ingame_Compass_C` en 800 × 122, `WBP_Map_Body_C` en 155 × 332, jeu jouable. **L'arbitrage `.pak` est clos** : il n'est pas nécessaire. Viser les widgets autoporteurs, pas les icônes seules |
+| 2026-08-15 (run 6) | `EPalGenderType` : `0 = None`, `1 = Male`, `2 = Female` | Les enums arrivent en entier côté Lua ; la table de correspondance est dans le header du même nom |

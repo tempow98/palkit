@@ -4,6 +4,37 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
 
 ## [Non publié]
 
+### Validé — 2026-08-15 (run 6) — M2 v0 terminé, et M1 débloqué
+
+**Deux verrous tombent le même soir.**
+
+**M2 v0 est terminé.** Le parcours synchronisé fonctionne : **743 Pals lus, 0 coquille,
+0 avertissement**, 32 pages en 8,2 s, page de synchronisation restaurée à sa valeur d'origine.
+Les données sont cohérentes de bout en bout — 310 espèces, niveaux 1→80, IVs 0→100, 674 Pals
+sur 743 portent au moins un passif, 5 rares. Le JSON fait 446 Ko contre 119 Ko au run
+précédent, pour le même nombre d'entrées : c'est la mesure de ce qui manquait.
+
+**M1 est débloqué, et l'arbitrage `.pak` est clos.** Avec les mesures prises 500 ms après
+l'ajout — le temps que Slate fasse sa passe de layout — deux widgets du jeu occupent une
+place réelle à l'écran, instanciés en Lua pur :
+
+| Widget | `IsVisible` | `DesiredSize` |
+|---|---|---|
+| `WBP_Ingame_Compass_C` | `true` | **800 × 122** |
+| `WBP_Map_Body_C` | `true` | **155,75 × 332,75** |
+| `WBP_CompassIconBase_C` | `false` | `0 × 0` — une icône attend des données que `Create()` ne fournit pas |
+
+Le jeu reste jouable, le curseur n'est pas capturé. **La minimap n'a pas besoin d'un `.pak`.**
+Leçon retenue : viser les widgets **autoporteurs**, pas leurs briques.
+
+- `shared/json.lua` — `json.array()` : marque une table comme liste, même vide. Sans ça, un
+  export sans avertissement sortait `"warnings": {}` et un export dégradé `"warnings": [...]` —
+  un champ qui change de type selon son contenu est un piège pour qui lit le fichier
+- `mods/PalKitBox` — `warnings` et `notes` sont marquées comme listes
+- `docs/sdk-notes.md` — `EPalGenderType` confirmé (`0 = None`, `1 = Male`, `2 = Female`) ;
+  M2 et la voie d'affichage passent en ✅
+- `scripts/test-shared.lua` — 92 tests (4 de plus) sur le marquage des listes
+
 ### Ajouté — 2026-08-15 (run 5) — Parcours synchronisé des pages de la Palbox
 
 Le comptage honnête a confirmé le diagnostic : **30 Pals lus, 697 coquilles, 1 page sur 32**.
