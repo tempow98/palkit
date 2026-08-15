@@ -3,18 +3,24 @@
 Ce document s'adresse à Lucas, qui est le **runtime** du projet : il installe, lance, teste et
 renvoie les logs. Chaque étape est donc explicite jusqu'à la touche à presser.
 
-> **État au 2026-08-15, après ton premier run :** UE4SS est installé et fonctionne (build Dev
-> confirmé — les dumps sont passés), `PalKitBox` et `PalKitSpike` tournent. Les deux ont
-> échoué, tous les deux pour des raisons désormais identifiées et corrigées. **Tu peux sauter
-> les parties 1 et 2** et aller directement au protocole ci-dessous.
+> **État au 2026-08-15, après ton 2ᵉ run.** Deux acquis majeurs : `Create()` +
+> `AddToViewport()` **fonctionnent** en Lua pur (la question de M1 est tranchée côté API), et
+> la Palbox **est atteinte** (32 pages × 30 slots). Il restait un bug, un seul, qui expliquait
+> tous les appels muets — il était dans PalKit, pas dans le jeu : on refusait d'appeler les
+> méthodes du jeu parce qu'UE4SS les expose comme des `userdata` et non des `function`.
+> Corrigé. **Tu peux sauter les parties 1 et 2.**
 
-## Par quoi commencer — 2ᵉ passe
+## Par quoi commencer — 3ᵉ passe
 
 | Priorité | Quoi | Ce qu'on cherche | Build Dev ? |
 |---|---|---|---|
-| 1 | **`F9` dans `PalKitBox`** — nouvelle touche | Laquelle des 4 voies d'accès à la Palbox répond. Une seule suffit à débloquer M2 | **Non** |
-| 2 | **`F7`** juste après | L'export JSON, si `F9` a trouvé une voie | **Non** |
-| 3 | **`F5`** (spike), deux fois : normal, puis **carte du jeu ouverte** | Le palier 3 doit enfin s'exécuter. C'est la question de M1 | Oui |
+| 1 | **`F11` dans `PalKitBox`** (la sonde a changé de touche, voir plus bas) | Les 4 voies doivent maintenant répondre, et `GetSlot(0,0)` sortir un slot | **Non** |
+| 2 | **`F7`** juste après | L'export JSON, avec de vrais Pals cette fois | **Non** |
+| 3 | **`F5`** (spike) | Le palier 4 doit enfin s'exécuter **après** le palier 3, et conclure sur un vrai état | Oui |
+
+⚠️ **La sonde passe de `F9` à `F11`.** Ton `PalKitDump` occupe F9 (dump d'objets) et F10
+(acteurs) : au 2ᵉ run, presser F9 déclenchait un dump de 127 Mo **et** la sonde, dans cet
+ordre. Rien de cassé, mais 1 seconde de gel à chaque diagnostic.
 
 Le dump `CTRL + J` est **fait** (merci) et dépouillé : il a donné les noms de Blueprints, la
 conversion monde → carte et les paramètres de mutation. Le seul dump encore utile est
@@ -173,14 +179,14 @@ Il n'a besoin **ni du build Dev, ni du spike, ni de la Palbox ouverte à l'écra
 - Lancer, charger un monde (de test de préférence, mais une vraie partie est plus parlante :
   plus il y a de Pals, mieux c'est)
 - En multi / serveur dédié : presser `INS` une fois le monde chargé
-- Presser **`F9`** → **la sonde, à faire en premier** (voir juste en dessous)
+- Presser **`F11`** → **la sonde, à faire en premier** (voir juste en dessous)
 - Presser **`F7`** → export JSON
 - Presser **`F8`** → même lecture, résumé dans le log seulement
 
-#### `F9` — la sonde de diagnostic *(nouveau, à presser avant `F7`)*
+#### `F11` — la sonde de diagnostic *(nouveau, à presser avant `F7`)*
 
 Au premier run, `F7` a rendu une seule ligne : `GetPalStorage n'a rien renvoyé`. C'était vrai
-mais inexploitable — ça ne disait pas *pourquoi*. `F9` essaie les **quatre voies d'accès**
+mais inexploitable — ça ne disait pas *pourquoi*. `F11` essaie les **quatre voies d'accès**
 connues à la Palbox et rend compte de chacune, même après qu'une ait réussi.
 
 **Attendu dans `UE4SS.log` :** un bloc `======== Sonde Palbox ========` contenant
@@ -192,10 +198,17 @@ connues à la Palbox et rend compte de chacune, même après qu'une ait réussi.
    (`GetPageNum`, `GetSlot(0,0)`, jusqu'à lire le `CharacterID` d'un vrai Pal),
 4. une ligne finale `VERDICT : voie retenue -- <nom>`, ou l'échec des quatre.
 
-| Résultat de `F9` | Ce qu'on en fait |
+| Résultat de `F11` | Ce qu'on en fait |
 |---|---|
 | `VERDICT : voie retenue -- …` | M2 est débloqué. `F7` doit produire le JSON dans la foulée |
 | Les 4 voies échouent | Les lignes `DEBUG` du bloc disent, voie par voie, si le membre est **absent**, **non appelable** ou s'il **lève** — trois causes, trois corrections différentes. Renvoie le log, je tranche |
+
+> **Ce qui a changé depuis le 2ᵉ run**, et qu'il faut regarder en priorité : une voie n'est
+> retenue que si `GetSlot(0,0)` **sort un slot**. Au run précédent, une voie annonçait
+> « 32 pages × 30 slots » puis se déclarait inexploitable deux lignes plus bas… et était
+> quand même retenue ; `F7` sortait alors « 0 Pal » en annonçant « toutes les entrées header
+> sont confirmées ». Les dimensions sont deux propriétés répliquées : elles se lisent même
+> quand plus aucune méthode ne répond. Un export sans Pal se déclare désormais **en échec**.
 
 **Attendu dans `UE4SS.log` :** un bloc `======== Export Palbox ========`, une ligne
 `Palbox : N Pals, …`, trois exemples de Pals, puis `export ecrit : <chemin>`.
@@ -250,3 +263,11 @@ Aucun des trois résultats possibles n'est un échec du projet :
 | Widget instancié **et visible** | La voie Lua pur est prouvée → M1 V1 démarre |
 | Instancié mais **invisible** | On vise un widget conteneur générique qu'on peuple nous-mêmes |
 | **Rien d'instanciable** | On rouvre l'arbitrage `.pak`, avant d'avoir écrit la minimap |
+
+> **Au 2ᵉ run, la ligne 1 est à moitié acquise** : `Create()` a construit le widget et
+> `AddToViewport` l'a accepté sans erreur — donc « rien d'instanciable » est écarté. Ce qui
+> manque est ta réponse à la question posée à l'écran : **as-tu vu quelque chose ?** Une
+> icône de boussole seule (`WBP_CompassIconBase_C`) est probablement vide tant qu'on ne lui
+> donne pas de données, donc « je n'ai rien vu » n'est pas un échec — mais ça décide de la
+> cible du prochain essai (icône à peupler, ou widget autoporteur type
+> `WBP_Ingame_Compass_C`).

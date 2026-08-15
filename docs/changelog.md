@@ -4,6 +4,41 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
 
 ## [Non publié]
 
+### Corrigé — 2026-08-15 (run 2) — La cause racine était chez nous
+
+**`Create()` + `AddToViewport()` fonctionnent en Lua pur.** Le palier 3 du spike a construit
+`WBP_CompassIconBase_C` sous la GameInstance et l'a ajouté au viewport sans erreur : la
+question qui bloquait M1 depuis le début est tranchée **côté API**, sans `.pak`. Reste à
+confirmer la visibilité à l'écran.
+
+**Un seul bug expliquait tous les échecs d'appel, et il était de notre côté.** `query.call`
+n'appelait une méthode que si `type(fn) == "function"` — or **UE4SS expose les `UFunction`
+comme des `userdata` appelables**. Ce garde rejetait donc *toutes* les méthodes du jeu, en
+silence : `GetPalStorage`, `GetPalPlayerState`, `GetPageNum`, `GetSlot`. L'hypothèse « deux
+`BP_PalPlayerState_C` » du run 1 est **infirmée** comme cause (l'observation, elle, reste
+vraie — et la cascade qu'elle a motivée a permis de lire la Palbox malgré le bug).
+
+- `shared/query.lua` — plus aucun test de type avant d'appeler : on tente l'appel sous
+  `pcall`, seul juge valable. Les diagnostics passent par `always("DEBUG")` : le logger
+  dédoublonne sur la chaîne de format, identique pour toutes les méthodes, ce qui masquait
+  3 échecs sur 4 et a coûté une passe de test entière
+- `shared/query.lua` — `storageAnswers` exige désormais un `GetSlot(0,0)` valide.
+  `PageNum`/`SlotNumInPage` sont des propriétés répliquées : elles se lisent parfaitement sur
+  un storage dont plus aucune méthode ne répond
+- `mods/PalKitBox` — le verdict de la sonde découle de la sonde en profondeur, au lieu d'un
+  second test qui la contredisait à une ligne d'intervalle (« voie inexploitable » suivi de
+  « voie retenue »). Un export sans Pal se déclare **en échec** au lieu d'annoncer « aucun
+  champ illisible : toutes les entrées header sont confirmées » — la liste était vide parce
+  qu'aucun champ n'avait pu être tenté
+- `mods/PalKitBox` — la sonde passe de `F9` à **`F11`** : `PalKitDump` occupe F9/F10, et une
+  pression déclenchait un dump de 127 Mo juste avant la sonde
+- `mods/PalKitSpike` — paliers 4 et conclusion enchaînés **dans la continuation** du palier 3.
+  `ExecuteInGameThread` est asynchrone : au run 2, le palier 4 concluait « aucun widget
+  affiché » 8 ms avant que le widget soit créé
+- `scripts/test-shared.lua` — 71 tests (3 de plus), dont **celui qui aurait attrapé le bug** :
+  une table à métatable `__call` reproduit un `userdata` appelable d'UE4SS, appelable sans
+  être de type `function`
+
 ### Corrigé — 2026-08-15 — Premier run en jeu : deux échecs, quatre trous comblés
 
 Premier aller-retour manette en main. `PalKitBox` et `PalKitSpike` ont tous les deux échoué,

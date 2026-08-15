@@ -60,8 +60,17 @@ end
 -- corrections differentes. Les trois sont desormais distinguees, au niveau DEBUG.
 -- @return any|nil
 local function invoke(logger, obj, methodName, ...)
+    -- Les messages passent par always("DEBUG") et non par debug() : le logger dedoublonne
+    -- sur la chaine de format, or c'est la MEME ici pour toutes les methodes. Le 2e run
+    -- (2026-08-15 18:13) n'a donc montre l'echec que de la premiere -- GetPageNum et
+    -- GetSlot etaient supprimes, et la cause racine est restee invisible une passe de plus.
+    local function say(fmt, ...)
+        if not logger then return end
+        if logger.always then logger.always("DEBUG", fmt, ...) else logger.debug(fmt, ...) end
+    end
+
     if obj == nil then
-        if logger then logger.debug("%s : appele sur nil", methodName) end
+        say("%s : appele sur nil", methodName)
         return nil
     end
 
@@ -70,20 +79,29 @@ local function invoke(logger, obj, methodName, ...)
 
     local okIndex, fn = pcall(function() return obj[methodName] end)
     if not okIndex then
-        if logger then logger.debug("%s : membre inaccessible (%s)", methodName, tostring(fn)) end
+        say("%s : membre inaccessible (%s)", methodName, tostring(fn))
         return nil
     end
-    if type(fn) ~= "function" then
-        if logger then
-            logger.debug("%s : membre present mais non appelable (type %s)",
-                methodName, type(fn))
-        end
+    if fn == nil then
+        say("%s : membre absent de la classe", methodName)
         return nil
     end
 
+    -- NE PAS exiger type(fn) == "function". UE4SS expose les UFunction comme des
+    -- **userdata appelables** (metatable __call), pas comme des fonctions Lua. Exiger le
+    -- type "function" rejetait donc TOUTES les methodes du jeu sans exception -- c'est la
+    -- cause unique des echecs de GetPalStorage, GetPalPlayerState, GetPageNum et GetSlot
+    -- des deux premiers runs. Lua sait appeler un userdata __call comme n'importe quelle
+    -- fonction : on tente l'appel, et c'est lui qui tranche.
     local okCall, result = pcall(fn, obj, unpackArgs(args, 1, argCount))
     if not okCall then
-        if logger then logger.debug("%s a leve : %s", methodName, tostring(result)) end
+        local err = tostring(result)
+        if string.find(err, "attempt to call", 1, true) then
+            say("%s : membre present (type %s) mais non appelable -- %s",
+                methodName, type(fn), err)
+        else
+            say("%s a leve : %s", methodName, err)
+        end
         return nil
     end
     return result
@@ -261,9 +279,14 @@ end
 
 -- ------------------------------------------------------------------ Palbox
 
---- Un storage n'est retenu que s'il repond. Un UObject valide dont aucun membre ne
--- reagit n'est pas une voie d'acces : c'est un piege qui ferait echouer l'export 200
--- slots plus loin, sans dire pourquoi.
+--- Un storage n'est retenu que s'il repond -- **jusqu'aux slots**.
+--
+-- La premiere version s'arretait aux dimensions (PageNum > 0). Le 2e run l'a prise en
+-- defaut : une voie annoncait 32 pages x 30 slots, la sonde constatait juste apres que
+-- GetSlot(0,0) rendait nil, et la voie etait quand meme retenue -- puis l'export sortait
+-- "0 Pal, 960 slots illisibles" en se declarant satisfait. Des dimensions ne prouvent
+-- rien : ce sont deux proprietes repliquees, lisibles meme si plus aucune methode ne
+-- repond. Le seul test qui engage, c'est de sortir un slot.
 -- @return boolean
 local function storageAnswers(logger, storage)
     if not safe.isValid(storage) then return false end
@@ -273,6 +296,12 @@ local function storageAnswers(logger, storage)
 
     if type(pages) ~= "number" or pages <= 0 then
         logger.debug("storage ecarte : GetPageNum/PageNum = %s", tostring(pages))
+        return false
+    end
+
+    if not safe.isValid(query.call(storage, "GetSlot", 0, 0)) then
+        logger.debug("storage ecarte : %d pages annoncees, mais GetSlot(0,0) ne rend rien",
+            pages)
         return false
     end
     return true

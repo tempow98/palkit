@@ -282,11 +282,18 @@ end
 --   B. StaticConstructObject -- plus brutale, contourne la construction ; testee seulement
 --      si A echoue, pour distinguer "on ne peut rien construire" de "Create est indisponible".
 -- Tout passe par le game thread : manipuler l'UMG depuis le thread Lua crashe.
-local function stage3_instantiate(ctx)
+-- `onDone` est appele quand le palier 3 a REELLEMENT fini, callback du game thread compris.
+-- Sans ca, le palier 4 juge trop tot : au 2e run il a conclu "aucun widget affiche" a
+-- .4036909, alors que le Create() reussissait a .4122594 -- 8 ms plus tard. Le verdict
+-- portait sur un etat qui n'existait pas encore.
+local function stage3_instantiate(ctx, onDone)
+    onDone = onDone or function() end
+
     logger.always("INFO", "--- Palier 3 : instanciation + AddToViewport ---")
 
     if #state.candidates == 0 then
         logger.always("WARN", "Palier 3 saute : aucun candidat issu du palier 2")
+        onDone()
         return
     end
 
@@ -297,7 +304,9 @@ local function stage3_instantiate(ctx)
     logger.always("INFO", "Cible retenue : %s (origine : %s, sur %d candidats)",
         target.name, tostring(target.origin), #state.candidates)
 
-    safe.gameThread(logger, "stage3", function()
+    -- Le corps est isole pour que ses `return` precoces n'empechent jamais l'appel de
+    -- onDone : quelle que soit la branche prise, le palier 4 doit suivre.
+    local function attempt()
         local widget = nil
 
         -- Voie A
@@ -348,7 +357,16 @@ local function stage3_instantiate(ctx)
         state.createdWidget = widget
         logger.always("INFO", "Palier 3 OK : AddToViewport a repondu sans erreur.")
         logger.always("INFO", ">>> REGARDE L'ECRAN. Vois-tu quelque chose de nouveau ? <<<")
+    end
+
+    local dispatched = safe.gameThread(logger, "stage3", function()
+        safe.call(logger, "palier 3", attempt)
+        onDone()
     end)
+
+    -- Si le dispatch lui-meme a echoue, le callback ne viendra jamais : la suite doit
+    -- quand meme se derouler, sinon le spike s'arrete sans rien conclure.
+    if not dispatched then onDone() end
 end
 
 -- ------------------------------------------------------------------ palier 4
@@ -392,11 +410,16 @@ local function runProbe()
     end
 
     stage2_discover()
-    stage3_instantiate(ctx)
-    stage4_sideEffects(ctx)
 
-    logger.always("INFO", "======== SPIKE DE RENDU : fin ========")
-    logger.always("INFO", "Renvoie UE4SS.log + une capture d'ecran.")
+    -- Paliers 4 et conclusion enchaines DANS la continuation du palier 3 : lui seul sait
+    -- quand le game thread a rendu la main. Les executer a la suite ici les ferait courir
+    -- avant l'instanciation -- et c'est exactement ce qui s'est passe au 2e run.
+    stage3_instantiate(ctx, function()
+        stage4_sideEffects(ctx)
+
+        logger.always("INFO", "======== SPIKE DE RENDU : fin ========")
+        logger.always("INFO", "Renvoie UE4SS.log + une capture d'ecran.")
+    end)
 end
 
 --- Retire le widget ajoute, pour pouvoir relancer F5 sans redemarrer le jeu.

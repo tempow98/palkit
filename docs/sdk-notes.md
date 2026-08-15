@@ -61,6 +61,9 @@ grep -rn "GetPalStorage" reference/PalworldModdingKit/Source/Pal/Public/
 | Fait | Conséquence | Source |
 |---|---|---|
 | Moteur **UE 5.1** | Les signatures moteur (`K2_GetActorLocation`, etc.) sont celles de 5.1. | PS scan UE4SS |
+| **UE4SS expose les `UFunction` comme des `userdata` appelables**, pas comme des `function` Lua | `type(obj.Methode) == "userdata"`, et pourtant `obj:Methode()` fonctionne. **Ne jamais filtrer sur `type(...) == "function"`** avant d'appeler : c'est le bug qui a fait échouer les runs 1 et 2. Tenter l'appel sous `pcall` est le seul test valable. | run 2, 2026-08-15 |
+| Le logger PalKit **dédoublonne sur la chaîne de format** (fenêtre 60 s) | Un message paramétré émis pour dix méthodes différentes n'apparaît **qu'une fois**. Dans un diagnostic, utiliser `always(niveau, …)`, qui ne dédoublonne pas — sinon la cause racine reste invisible. | run 2, 2026-08-15 |
+| `ExecuteInGameThread` est **asynchrone** | Ce qui suit l'appel s'exécute *avant* le callback. Au run 2, le palier 4 du spike a conclu « aucun widget affiché » 8 ms avant que le widget soit créé. Tout ce qui dépend du résultat doit être enchaîné **dans** la continuation. | run 2, 2026-08-15 |
 | `ConsoleManagerSingleton` **introuvable** (2 valeurs candidates) | **Pas de console UE4SS** sur ce build : aucun repli par commande console, tout passe par le Lua. | `UE4SS.log` au démarrage |
 | `FindAllOf("WidgetBlueprintGeneratedClass")` renvoie **0** | Alors que l'ObjectDump en compte **668**. Cette voie de découverte des classes d'UI est **morte** : passer par `StaticFindObject(<chemin>)` ou par la classe des instances vivantes. | log F5 + ObjectDump |
 | Un `UserWidget` sous `/Game/….:WidgetTree.X` est un **modèle de CDO**, pas un widget affiché | Les instances réelles vivent sous `/Engine/Transient.PalGameEngine…`. Les « 3 204 UserWidget vivants » du premier log étaient, pour l'essentiel, des modèles — et instancier un modèle n'aurait rien affiché. | log F5 + ObjectDump |
@@ -95,7 +98,8 @@ grep -rn "GetPalStorage" reference/PalworldModdingKit/Source/Pal/Public/
 
 | Cible | Statut | Nom exact | Source | Date |
 |---|---|---|---|---|
-| Voie d'affichage en Lua pur | ⬜ | **question du spike** — aucun header ne répond à ça. Toujours ouverte : au premier run, le palier 3 n'a pas été atteint (palier 2 sans candidat) | log F5 | 2026-08-15 |
+| Voie d'affichage en Lua pur — **API** | ✅ | **`UWidgetBlueprintLibrary::Create(world, class, controller)` puis `AddToViewport(0)` fonctionnent.** Widget construit sous la GameInstance (`…BP_PalGameInstance_C_2147482476.WBP_CompassIconBase_C_2147419588`), `AddToViewport` sans erreur. Le CDO se prend par `StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")` | log F5 run 2 | 2026-08-15 |
+| Voie d'affichage en Lua pur — **visibilité à l'écran** | ⬜ | l'API répond, reste à confirmer qu'un widget est **visible**. Une icône seule (`WBP_CompassIconBase_C`) est probablement vide sans données : à réessayer sur un widget autoporteur | — | |
 | Texture de world map | 📘 | `APalWorldMapCapture` : props `worldMapTexture` (UTexture2D), `worldMapHeightTexture`, et `GetRenderedWorldMapTexture()` | ModdingKit 62fad41 — `PalWorldMapCapture.h` | 2026-08-15 |
 | Widget de carte du jeu | 📘 | `UPalUIWorldMap` : `UPalUserWidgetOverlayUI` ; `CreateWorldMapData(EPalWorldMapType)`, `AddWorldMapIcon()`, `RemoveWorldMapIcon()`, `GetNearestIconWidget()` | ModdingKit 62fad41 — `PalUIWorldMap.h` | 2026-08-15 |
 | Widget d'icône de carte | 📘 | `UPalUIWorldMapIcon` | ModdingKit 62fad41 — `PalUIWorldMapIcon.h` | 2026-08-15 |
@@ -156,11 +160,22 @@ et sous quel nom de Blueprint dérivé — c'est le rôle du dump d'acteurs (`CT
 C'est l'acquis le plus important de la passe headers : les Pals de la Palbox sont lisibles
 depuis les données du joueur, donc **sans dépendre du spike de rendu ni de l'écran ouvert**.
 
-> ❌ **Cette chaîne a échoué au premier essai en jeu (2026-08-15)** : `GetPalStorage n'a rien
-> renvoyé`. Le nom n'est pas en cause — l'ObjectDump du même run montre l'instance bien
-> vivante, à `…:PersistentLevel.BP_PalPlayerState_C_2147480325.PalPlayerDataPalStorage_2147457951`.
-> C'est le **chemin d'accès** qui est en cause, et le suspect est identifié : **deux
-> `BP_PalPlayerState_C` coexistent**, un seul porte la Palbox. Voir les voies ci-dessous.
+> ✅ **Cause de l'échec des runs 1 et 2 : un bug de PalKit, pas du jeu.** `query.call`
+> n'appelait une méthode que si `type(fn) == "function"`. Or **UE4SS expose les `UFunction`
+> comme des userdata appelables** (`__call`), jamais comme des fonctions Lua : ce garde
+> rejetait donc *toutes* les méthodes du jeu, en silence. `GetPalStorage`,
+> `GetPalPlayerState`, `GetPageNum`, `GetSlot` — un seul et même défaut.
+>
+> Le 2e run l'a rendu visible (`GetPalPlayerState : membre présent mais non appelable
+> (type userdata)`), et une seule ligne l'a montré : le logger dédoublonne sur la chaîne de
+> format, identique pour toutes les méthodes, si bien que les échecs suivants étaient
+> supprimés. Corrigé des deux côtés — l'appel ne teste plus le type, et les messages de
+> diagnostic passent par `always("DEBUG")`, sans dédoublonnage.
+>
+> **L'hypothèse « deux `BP_PalPlayerState_C`, un seul porte la Palbox » n'était donc pas la
+> cause** — mais l'observation reste vraie, et la cascade de voies qu'elle a motivée reste
+> utile : c'est elle qui a permis de lire la Palbox par `.PalStorage` alors qu'aucun appel
+> ne passait.
 
 ```
 UEHelpers.GetPlayerController()            -- APalPlayerController
@@ -186,23 +201,29 @@ ordre, et **diagnosticables une par une** avec `F9` de `PalKitBox`. La première
 objet *qui répond* (`GetPageNum` ou `PageNum` > 0) gagne, et son nom est journalisé — c'est
 lui qui fera passer la ligne en ✅.
 
-| # | Voie | Statut | Pourquoi elle est là | Source |
+| # | Voie | Statut | Résultat au run 2 (avant correction du garde d'appel) | Source |
 |---|---|---|---|---|
-| 1 | `APalPlayerState:GetPalStorage()` | ❌ | Voie du premier essai. Signature bonne, retour vide | `PalPlayerState.h:573` |
-| 2 | `APalPlayerState.PalStorage` (propriété) | ⬜ | `UPROPERTY(BlueprintReadWrite, Replicated)` : une propriété se lit souvent là où l'appel d'une `UFUNCTION` résiste | `PalPlayerState.h:180` |
-| 3 | `UPalUtility.GetPalStorageDataByPlayerUID(world, uid)` | ⬜ | **Statique, via le CDO `/Script/Pal.Default__PalUtility`** : contourne entièrement le PlayerState, donc aussi l'ambiguïté des deux instances. Le `uid` vient de `APalPlayerController:GetPlayerUId()` | `PalUtility.h:1182` + ObjectDump |
-| 4 | `FindAllOf("PalPlayerDataPalStorage")` | ⬜ | Filet. Parcours global, donc **hors boucle et une seule fois** (règle 2 de `query.lua`), en écartant le CDO `Default__` | ObjectDump |
+| 1 | `APalPlayerState:GetPalStorage()` | 🟡 | Rendait vide — comme **tout** appel de méthode à ce stade. **À revalider au run 3** : c'est la voie la plus propre, et plus rien ne s'oppose à ce qu'elle passe | `PalPlayerState.h:573` |
+| 2 | `APalPlayerState.PalStorage` (propriété) | ✅ | **Voie retenue au run 2.** A rendu `…BP_PalPlayerState_C_2147480314.PalPlayerDataPalStorage_2147458069`, `PageNum = 32`, `SlotNumInPage = 30` — cohérent avec la 1.0. Une propriété se lit là où un appel échoue | `PalPlayerState.h:180` |
+| 3 | `UPalUtility.GetPalStorageDataByPlayerUID(world, uid)` | 🟡 | Rien rendu, mais elle dépend de `GetPlayerUId()` — donc du même garde. À revalider | `PalUtility.h:1182` + ObjectDump |
+| 4 | `FindAllOf("PalPlayerDataPalStorage")` | ✅ | A trouvé **le même objet** que la voie 2, en écartant le CDO. Filet fonctionnel, mais parcours global : hors boucle et une seule fois | ObjectDump |
 
-> En amont des voies 1 et 2, le PlayerState lui-même se résout par
+> En amont des voies 1 et 2, le PlayerState se résout par
 > `APalPlayerController:GetPalPlayerState()` (📘 `PalPlayerController.h:935`) **avant** la
-> propriété moteur `PlayerState` : le getter Pal sait ce qu'est un PlayerState *Pal*, la
-> propriété moteur n'en sait rien. C'est le correctif le plus direct du bug du 15/08.
+> propriété moteur `PlayerState`.
+>
+> ⚠️ **Les dimensions ne prouvent rien.** `PageNum` et `SlotNumInPage` sont deux propriétés
+> répliquées : elles se lisent parfaitement sur un storage dont plus aucune méthode ne
+> répond. Au run 2, une voie annonçant 32 × 30 a été retenue alors que `GetSlot(0,0)` rendait
+> `nil` — et l'export a produit « 0 Pal, 960 slots illisibles » en se déclarant satisfait.
+> Le seul test qui engage est **de sortir un slot**, et c'est désormais celui qu'applique
+> `query.storageAnswers`.
 
 ### Conteneurs
 
 | Cible | Statut | Classe | Fichier |
 |---|---|---|---|
-| Palbox (données joueur) | ❌ | `UPalPlayerDataPalStorage` — la classe et l'instance sont confirmées au runtime ; c'est l'**accès** qui reste à prouver (voir les quatre voies ci-dessus) | `PalPlayerDataPalStorage.h`, ObjectDump 2026-08-15 |
+| Palbox (données joueur) | ✅ | `UPalPlayerDataPalStorage`, atteint par `APalPlayerState.PalStorage`. 32 pages × 30 slots lus en jeu | run 2, 2026-08-15 |
 | Conteneur générique de Pals | 📘 | `UPalIndividualCharacterContainer : UPalContainerBase` — `Num()`, `GetSlots()`, `Get(i)`, `FindByHandle()` | `PalIndividualCharacterContainer.h` |
 | Stockage dimensionnel | 📘 | `UPalPlayerDataPalDimensionStorage`, obtenu par `UPalPlayerDataPalStorage:GetDimensionStorage()` | `PalPlayerDataPalDimensionStorage.h` |
 | Stockage global (transfert entre mondes) | 📘 | `UPalGlobalPalStorageSubsystem`, `FPalGlobalPalStorageSaveParameter` | `PalGlobalPalStorageSubsystem.h` |
@@ -401,3 +422,9 @@ sauvegarde, pas à nous.
 | 2026-08-15 (ObjectDump) | La conversion monde → carte vit bien dans le Blueprint : `WBP_Map_Body_C:CalcMapImagePosition` & co. | Dernier ⬜ structurel de M1 comblé. Reste la seule question du spike : peut-on **afficher** |
 | 2026-08-15 (ObjectDump) | `WBP_Ingame_Compass_C` et ses icônes typées existent | Point d'entrée de M1 plus prometteur que la carte : un HUD déjà fait pour rester à l'écran. Devient la 2ᵉ cible du spike |
 | 2026-08-15 (ObjectDump) | La formule de mutation est **paramétrée** dans `UPalGameSetting` (`Combi_Mutation*`) | Le trou M4 est comblé — et l'affirmation « aucun header ne mentionne Mutation » était fausse : elle venait d'un grep partiel. Voir l'encadré de correction en M4 |
+| 2026-08-15 (run 2) | **Cause racine des deux échecs : `type(fn) == "function"` dans `query.call`.** UE4SS rend des `userdata` appelables | Un seul défaut, chez nous, expliquait `GetPalStorage`, `GetPalPlayerState`, `GetPageNum` et `GetSlot`. L'hypothèse « deux PlayerState » est **infirmée** comme cause (l'observation reste vraie). Le garde de type est supprimé : on tente l'appel |
+| 2026-08-15 (run 2) | Le dédoublonnage du logger masquait 3 échecs sur 4 (même chaîne de format) | Les messages de diagnostic passent en `always("DEBUG")`. Une sonde qui dédoublonne cache précisément ce qu'elle cherche |
+| 2026-08-15 (run 2) | **La Palbox est lue** : `.PalStorage` → 32 pages × 30 slots | Voie 2 retenue. Les voies 1 et 3 sont à revalider maintenant que les appels passent |
+| 2026-08-15 (run 2) | Un storage peut annoncer ses dimensions **sans qu'aucun slot ne réponde** | `PageNum`/`SlotNumInPage` sont des propriétés répliquées. `storageAnswers` exige désormais un `GetSlot(0,0)` valide — sinon l'export sort « 0 Pal » en se déclarant satisfait |
+| 2026-08-15 (run 2) | **`Create()` + `AddToViewport()` fonctionnent en Lua pur** | La question centrale de M1 est tranchée côté API : pas besoin de `.pak` pour instancier un widget du jeu. Reste la visibilité à l'écran |
+| 2026-08-15 (run 2) | `ExecuteInGameThread` est asynchrone : le palier 4 jugeait 8 ms trop tôt | Tout ce qui dépend d'un résultat du game thread s'enchaîne désormais dans la continuation |

@@ -51,7 +51,10 @@ local DEFAULTS = {
     keys = {
         export  = "F7", -- export JSON complet
         summary = "F8", -- resume dans le log, sans fichier
-        probe   = "F9", -- sonde de diagnostic : quelle voie d'acces a la Palbox repond ?
+        -- F11 et pas F9 : ton PalKitDump occupe deja F9 (dump d'objets) et F10 (acteurs).
+        -- Au 2e run, une pression sur F9 declenchait les deux -- un dump de 127 Mo qui fige
+        -- le jeu, juste avant la sonde. Surchargeable dans settings.json.
+        probe   = "F11", -- sonde de diagnostic : quelle voie d'acces a la Palbox repond ?
     },
     -- Garde-fou : la Palbox fait 30 pages en 1.0, mais un serveur moddé peut annoncer
     -- n'importe quoi. On ne boucle jamais sur une borne venue du jeu sans plafond.
@@ -281,8 +284,21 @@ local function logSummary(report)
         for _, w in ipairs(report.warnings) do
             logger.always("WARN", "  - %s", w)
         end
+    elseif report.meta.palCount == 0 then
+        -- Le faux vert du 2e run : "aucun champ illisible" sur zero Pal lu. La liste des
+        -- avertissements est vide parce qu'aucun champ n'a jamais ete TENTE -- ce qui est
+        -- l'inverse d'une confirmation. Un export sans Pal est un echec, et doit le dire.
+        logger.always("ERROR", "ECHEC : aucun Pal lu. La liste d'avertissements est vide "
+            .. "parce qu'aucun champ n'a pu etre tente, pas parce que tout est confirme.")
+        if report.meta.unreadableSlots > 0 then
+            logger.always("ERROR", "  %d slots sur %d n'ont pas repondu : c'est l'acces aux "
+                .. "slots qui casse, pas la lecture des champs. Presser F9.",
+                report.meta.unreadableSlots,
+                report.meta.pageCount * report.meta.slotsPerPage)
+        end
     else
-        logger.always("INFO", "Aucun champ illisible : toutes les entrees header sont confirmees.")
+        logger.always("INFO", "Aucun champ illisible sur %d Pals lus : toutes les entrees "
+            .. "header sont confirmees.", report.meta.palCount)
     end
 end
 
@@ -308,7 +324,8 @@ end
 
 --- Verifie qu'un storage est REELLEMENT exploitable, pas seulement valide.
 -- C'est l'etape qui compte : un UObject valide dont GetSlot ne repond pas ferait echouer
--- l'export 200 slots plus loin, sans dire pourquoi.
+-- l'export 960 slots plus loin en se declarant satisfait -- ce qui est arrive au 2e run.
+-- @return boolean  vrai seulement si un slot a pu etre sorti du storage
 local function probeStorageDepth(storage)
     local pages   = query.callWhy(logger, storage, "GetPageNum")
     local pagesP  = safe.get(storage, "PageNum")
@@ -321,25 +338,29 @@ local function probeStorageDepth(storage)
     local slot = query.callWhy(logger, storage, "GetSlot", 0, 0)
     logger.always("INFO", "    GetSlot(0,0)      : %s", describe(slot))
     if not safe.isValid(slot) then
-        logger.always("WARN", "    -> les slots ne repondent pas : voie inexploitable")
-        return
+        logger.always("WARN", "    -> les slots ne repondent pas : voie INEXPLOITABLE "
+            .. "(des dimensions lisibles ne prouvent rien : ce sont deux proprietes)")
+        return false
     end
 
     local isEmpty = query.callWhy(logger, slot, "IsEmpty")
     logger.always("INFO", "    slot:IsEmpty()    : %s", tostring(isEmpty))
 
+    -- A partir d'ici la voie est exploitable : le reste renseigne sur la lecture d'un Pal,
+    -- mais un premier slot vide n'a rien d'anormal et ne disqualifie pas la voie.
     local handle = query.callWhy(logger, slot, "GetHandle")
     logger.always("INFO", "    slot:GetHandle()  : %s", describe(handle))
-    if not safe.isValid(handle) then return end
+    if not safe.isValid(handle) then return true end
 
     local param = query.callWhy(logger, handle, "TryGetIndividualParameter")
     logger.always("INFO", "    parametre individuel : %s", describe(param))
-    if not safe.isValid(param) then return end
+    if not safe.isValid(param) then return true end
 
     -- Le controle final : un champ reellement lu. S'il sort, toute la chaine tient.
     local saveParam = safe.get(param, "SaveParameter")
     local species   = saveParam and query.str(safe.get(saveParam, "CharacterID"))
     logger.always("INFO", "    SaveParameter.CharacterID : %s", tostring(species))
+    return true
 end
 
 local function runDiagnostics()
@@ -387,8 +408,10 @@ local function runDiagnostics()
                 logger.always("WARN", "    aucun objet")
             else
                 logger.always("INFO", "    objet : %s", describe(storage))
-                probeStorageDepth(storage)
-                if query.storageAnswers(logger, storage) and winner == nil then
+                -- Le verdict vient de la sonde en profondeur, pas d'un second test
+                -- independant : au 2e run, les deux se contredisaient a une ligne
+                -- d'intervalle -- "voie inexploitable" suivi de "voie retenue".
+                if probeStorageDepth(storage) and winner == nil then
                     winner = route.name
                 end
             end

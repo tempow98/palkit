@@ -144,11 +144,13 @@ check("reset idempotent", pcall(query.reset))
 -- 2026-08-15 : "GetPalStorage n'a rien renvoye" ne distinguait pas trois causes qui
 -- appellent trois corrections differentes.
 local said = {}
+local function record(fmt, ...)
+    local ok, msg = pcall(string.format, fmt, ...)
+    said[#said + 1] = ok and msg or fmt
+end
 local fakeLogger = {
-    debug = function(fmt, ...)
-        local ok, msg = pcall(string.format, fmt, ...)
-        said[#said + 1] = ok and msg or fmt
-    end,
+    debug  = record,
+    always = function(_, fmt, ...) record(fmt, ...) end,
 }
 local function lastSaid() return said[#said] or "" end
 
@@ -156,8 +158,8 @@ check("callWhy rend la valeur", query.callWhy(fakeLogger, fakeObj, "GetThing") =
 check("callWhy silencieux quand ca marche", #said == 0)
 
 query.callWhy(fakeLogger, fakeObj, "PasLa")
-check("callWhy signale un membre non appelable",
-      lastSaid():find("non appelable", 1, true) ~= nil, lastSaid())
+check("callWhy signale un membre absent",
+      lastSaid():find("absent", 1, true) ~= nil, lastSaid())
 
 query.callWhy(fakeLogger, fakeObj, "Boom")
 check("callWhy signale une levee", lastSaid():find("a leve", 1, true) ~= nil, lastSaid())
@@ -165,17 +167,45 @@ check("callWhy signale une levee", lastSaid():find("a leve", 1, true) ~= nil, la
 query.callWhy(fakeLogger, nil, "GetThing")
 check("callWhy signale l'objet nil", lastSaid():find("nil", 1, true) ~= nil, lastSaid())
 
--- storageAnswers : un UObject valide ne suffit pas, il doit repondre. Un storage vide
--- accepte ici ferait echouer l'export 200 slots plus loin, sans dire pourquoi.
+fakeObj.NotCallable = 42
+query.callWhy(fakeLogger, fakeObj, "NotCallable")
+check("callWhy signale un membre present mais non appelable",
+      lastSaid():find("non appelable", 1, true) ~= nil, lastSaid())
+
+-- LE test de non-regression du 2e run. UE4SS expose ses UFunction comme des **userdata
+-- appelables**, pas comme des fonctions Lua : exiger type(fn) == "function" rejetait
+-- silencieusement toutes les methodes du jeu. Impossible de fabriquer un userdata en Lua
+-- pur, mais une table a metatable __call reproduit exactement le cas : appelable, et d'un
+-- type autre que "function".
+local callable = setmetatable({}, { __call = function(_, self, n) return (n or 0) + self.value end })
+local fakeUE4SS = setmetatable({ value = 42 }, { __index = { GetThing = callable } })
+check("callWhy appelle un membre appelable qui n'est pas une function",
+      query.callWhy(fakeLogger, fakeUE4SS, "GetThing", 8) == 50,
+      tostring(query.callWhy(fakeLogger, fakeUE4SS, "GetThing", 8)))
+
+-- storageAnswers : ni un UObject valide, ni des dimensions ne suffisent -- il faut qu'un
+-- SLOT sorte. Au 2e run, un storage annoncant 32 pages x 30 avait ete retenu alors que
+-- GetSlot(0,0) ne rendait rien : l'export a sorti 0 Pal en se declarant satisfait.
 local function fakeStorage(fields)
     fields.IsValid = function() return true end
     return fields
 end
+local function fakeSlot()
+    return { IsValid = function() return true end }
+end
 
-check("storage avec GetPageNum est retenu",
-      query.storageAnswers(fakeLogger, fakeStorage({ GetPageNum = function() return 30 end })))
-check("storage avec la seule propriete PageNum est retenu",
-      query.storageAnswers(fakeLogger, fakeStorage({ PageNum = 12 })))
+check("storage complet (pages + slots) est retenu",
+      query.storageAnswers(fakeLogger, fakeStorage({
+          GetPageNum = function() return 32 end,
+          GetSlot    = function(_, _, _) return fakeSlot() end,
+      })))
+check("storage avec la seule propriete PageNum mais des slots est retenu",
+      query.storageAnswers(fakeLogger, fakeStorage({
+          PageNum = 12,
+          GetSlot = function(_, _, _) return fakeSlot() end,
+      })))
+check("storage aux dimensions lisibles mais aux slots muets est ECARTE",
+      not query.storageAnswers(fakeLogger, fakeStorage({ PageNum = 32, SlotNumInPage = 30 })))
 check("storage a zero page est ecarte",
       not query.storageAnswers(fakeLogger, fakeStorage({ PageNum = 0 })))
 check("storage muet est ecarte",
